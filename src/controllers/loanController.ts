@@ -2,7 +2,6 @@ import { Request, Response } from "express";
 import * as loanService from "../services/loanService";
 import { Loan } from "../models/loanModel";
 import { LoanSchedule } from "../models/LoanSchedule";
-import fs from "fs";
 import csv from "csv-parser";
 import {
   sendErrorResponse,
@@ -11,7 +10,11 @@ import {
 } from "../helper";
 import XLSX from "xlsx";
 import Transaction from "../models/Transaction";
-import path from "path";
+import { Readable } from "stream";
+
+function bufferToStream(buffer: Buffer): Readable {
+  return Readable.from(buffer);
+}
 
 export const createLoan = async (req: Request, res: Response) => {
   try {
@@ -41,91 +44,85 @@ const parseContactNumbers = (raw: string): string[] => {
   return numbers;
 };
 
+function parseRowToLoan(row: any, failed: any[]) {
+  const contactNos = parseContactNumbers(String(row["contactNo"] || ""));
+  const parsedRow = {
+    caseNo: String(row["caseNo"] || "").trim(),
+    name: String(row["name"] || "").trim(),
+    address: String(row["address"] || "").trim(),
+    ENGINENO: String(row["ENGINENO"] || "").trim(),
+    CHASSISNO: String(row["CHASSISNO"] || "").trim(),
+    umrnNo: String(row["umrnNo"] || "").trim(),
+    contactNo: contactNos,
+    loanAmount: Number(String(row["loanAmount"] || "").replace(/,/g, "")),
+    tenure: Number(String(row["tenure"] || "").replace(/[^0-9]/g, "")),
+    annualInterest: Number(String(row["annualInterest"] || "").replace(/[^0-9.]/g, "")),
+    startDate: new Date(row["startDate"]),
+    emiDate: new Date(row["emiDate"]),
+  };
+
+  const invalid = [
+    !parsedRow.caseNo,
+    !parsedRow.name,
+    !Array.isArray(parsedRow.contactNo) || parsedRow.contactNo.length === 0,
+    isNaN(parsedRow.loanAmount),
+    isNaN(parsedRow.tenure),
+    isNaN(parsedRow.annualInterest),
+    !(parsedRow.startDate instanceof Date && !isNaN(parsedRow.startDate.getTime())),
+    !(parsedRow.emiDate instanceof Date && !isNaN(parsedRow.emiDate.getTime())),
+  ].some(Boolean);
+
+  if (invalid) {
+    failed.push({ caseNo: parsedRow.caseNo || row["Case No"], error: "Invalid or missing fields" });
+    return null;
+  }
+  return parsedRow;
+}
+
 export const uploadLoansCSV = async (req: Request, res: Response) => {
   try {
     if (!req.file) {
       return sendErrorResponse(res, { message: "File not uploaded" }, 400);
     }
 
+    const ext = req.file.originalname.split(".").pop()?.toLowerCase();
     const loans: any[] = [];
     const failed: any[] = [];
 
-    fs.createReadStream(req.file.path)
-      .pipe(csv())
-      .on("data", (row) => {
-        const contactNos = parseContactNumbers(row["contactNo"]);
-
-        const parsedRow = {
-          caseNo: row["caseNo"]?.trim(),
-          name: row["name"]?.trim(),
-          address: row["address"]?.trim(),
-          ENGINENO: row["ENGINENO"]?.trim(),
-          CHASSISNO: row["CHASSISNO"]?.trim(),
-          umrnNo: row["umrnNo"]?.trim(),
-          contactNo: contactNos, // ✅ string[]
-          loanAmount: Number((row["loanAmount"] || "").replace(/,/g, "")),
-          tenure: Number((row["tenure"] || "").replace(/[^0-9]/g, "")),
-          annualInterest: Number(
-            (row["annualInterest"] || "").replace(/[^0-9.]/g, "")
-          ),
-          startDate: new Date(row["startDate"]),
-          emiDate: new Date(row["emiDate"]),
-        };
-
-        const hasInvalidField = [
-          !parsedRow.caseNo,
-          !parsedRow.name,
-          !Array.isArray(parsedRow.contactNo) ||
-            parsedRow.contactNo.length === 0,
-          isNaN(parsedRow.loanAmount),
-          isNaN(parsedRow.tenure),
-          isNaN(parsedRow.annualInterest),
-          !(
-            parsedRow.startDate instanceof Date &&
-            !isNaN(parsedRow.startDate.getTime())
-          ),
-          !(
-            parsedRow.emiDate instanceof Date &&
-            !isNaN(parsedRow.emiDate.getTime())
-          ),
-        ].some(Boolean);
-
-        if (hasInvalidField) {
-          failed.push({
-            caseNo: parsedRow.caseNo || row["Case No"],
-            error:
-              "Invalid or missing fields: ensure all numbers and dates are valid",
-          });
-        } else {
-          loans.push(parsedRow);
-        }
-      })
-      .on("end", async () => {
-        const inserted: any[] = [];
-
-        for (const data of loans) {
-          try {
-            const loan = await loanService.createLoan(data);
-            inserted.push({ caseNo: data.caseNo });
-          } catch (err: any) {
-            failed.push({
-              caseNo: data.caseNo,
-              error: err?.message || "Unknown error during loan creation",
-            });
-          }
-        }
-
-        if (req.file?.path) {
-          fs.unlinkSync(req.file.path);
-        }
-
-        sendSuccessResponse(
-          res,
-          { inserted, failed },
-          "CSV processed successfully",
-          200
-        );
+    if (ext === "xlsx" || ext === "xls") {
+      // Parse XLSX/XLS from buffer
+      const workbook = XLSX.read(req.file.buffer, { type: "buffer", cellDates: true });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows: any[] = XLSX.utils.sheet_to_json(sheet, { raw: false });
+      for (const row of rows) {
+        const parsed = parseRowToLoan(row, failed);
+        if (parsed) loans.push(parsed);
+      }
+    } else {
+      // Parse CSV from buffer
+      await new Promise<void>((resolve, reject) => {
+        bufferToStream(req.file!.buffer)
+          .pipe(csv())
+          .on("data", (row) => {
+            const parsed = parseRowToLoan(row, failed);
+            if (parsed) loans.push(parsed);
+          })
+          .on("end", resolve)
+          .on("error", reject);
       });
+    }
+
+    const inserted: any[] = [];
+    for (const data of loans) {
+      try {
+        await loanService.createLoan(data);
+        inserted.push({ caseNo: data.caseNo });
+      } catch (err: any) {
+        failed.push({ caseNo: data.caseNo, error: err?.message || "Unknown error" });
+      }
+    }
+
+    sendSuccessResponse(res, { inserted, failed }, "File processed successfully", 200);
   } catch (error: any) {
     sendErrorResponse(res, error.message || "Internal Server Error", 500);
   }
@@ -137,9 +134,8 @@ export const uploadUmrnFile = async (req: Request, res: Response) => {
       return sendErrorResponse(res, { message: "No file uploaded" }, 400);
     }
 
-    const filePath = req.file.path;
     const results: { caseNo: string; umrnNo: string }[] = [];
-    fs.createReadStream(filePath)
+    bufferToStream(req.file.buffer)
       .pipe(csv())
       .on("data", (data) => {
         results.push({
@@ -149,7 +145,6 @@ export const uploadUmrnFile = async (req: Request, res: Response) => {
       })
       .on("end", async () => {
         const summary = await loanService.processUmrnFile(results);
-        fs.unlinkSync(filePath);
         sendSuccessResponse(res, summary, "File processed successfully", 200);
       })
       .on("error", (err) => {
@@ -315,8 +310,7 @@ export const downloadLoanCSV = async (
 
 export const uploadTransactions = async (req: Request, res: Response) => {
   try {
-    const filePath = req.file?.path;
-    if (!filePath) {
+    if (!req.file?.buffer) {
       return sendErrorResponse(
         res,
         { message: "File is required" },
@@ -324,13 +318,11 @@ export const uploadTransactions = async (req: Request, res: Response) => {
       );
     }
 
-    const workbook = XLSX.readFile(filePath);
+    const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
     const sheetName = workbook.SheetNames[0];
     const data = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
 
     await loanService.processTransactionData(data);
-
-    fs.unlinkSync(filePath);
 
     sendSuccessResponse(
       res,
@@ -441,54 +433,52 @@ export const bulkLedgerUpload = async (req: Request, res: Response) => {
     }
 
     const results: any[] = [];
-    const filePath = path.resolve(file.path);
 
-    fs.createReadStream(filePath)
-      .pipe(csv())
-      .on("data", (data) => {
-        results.push(data);
-      })
-      .on("end", async () => {
-        let successCount = 0;
-        let failureCount = 0;
-        let failures: string[] = [];
+    await new Promise<void>((resolve, reject) => {
+      bufferToStream(file.buffer)
+        .pipe(csv())
+        .on("data", (data) => results.push(data))
+        .on("end", resolve)
+        .on("error", reject);
+    });
 
-        for (const record of results) {
-          const caseNo = record.caseNo?.trim();
-          const amount = parseFloat(record.amount);
-          const otherCharges = parseFloat(record.otherCharges || "0");
-          const remarks = record.remarks;
+    let successCount = 0;
+    let failureCount = 0;
+    let failures: string[] = [];
 
-          if (!caseNo || isNaN(amount)) {
-            failureCount++;
-            failures.push(`Invalid data: ${JSON.stringify(record)}`);
-            continue;
-          }
+    for (const record of results) {
+      const caseNo = record.caseNo?.trim();
+      const amount = parseFloat(record.amount);
+      const otherCharges = parseFloat(record.otherCharges || "0");
+      const remarks = record.remarks;
 
-          const result = await loanService.addAmountToLedger(
-            caseNo,
-            amount,
-            otherCharges,
-            "caseBulkuplode",
-            remarks
-          );
+      if (!caseNo || isNaN(amount)) {
+        failureCount++;
+        failures.push(`Invalid data: ${JSON.stringify(record)}`);
+        continue;
+      }
 
-          if (result.success) successCount++;
-          else {
-            failureCount++;
-            failures.push(`${caseNo}: ${result.message}`);
-          }
-        }
+      const result = await loanService.addAmountToLedger(
+        caseNo,
+        amount,
+        otherCharges,
+        "caseBulkuplode",
+        remarks
+      );
 
-        fs.unlinkSync(filePath); // Clean up uploaded file
+      if (result.success) successCount++;
+      else {
+        failureCount++;
+        failures.push(`${caseNo}: ${result.message}`);
+      }
+    }
 
-        return sendSuccessResponse(
-          res,
-          { successCount, failureCount, failures },
-          "Bulk ledger upload processed.",
-          200
-        );
-      });
+    return sendSuccessResponse(
+      res,
+      { successCount, failureCount, failures },
+      "Bulk ledger upload processed.",
+      200
+    );
   } catch (error: any) {
     console.error("Bulk upload error:", error);
     return sendErrorResponse(

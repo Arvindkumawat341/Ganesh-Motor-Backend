@@ -345,7 +345,7 @@ export const generateLoanCSV = async (
     },
   };
   if (caseNo) {
-    matchFilter.caseNo = caseNo;
+    matchFilter.caseNo = { $regex: caseNo, $options: "i" };
   }
   const loans = await Loan.aggregate([
     {
@@ -365,6 +365,8 @@ export const generateLoanCSV = async (
         umrnNo: 1,
         "loanSchedules.voucherDate": 1,
         "loanSchedules.emi": 1,
+        "loanSchedules.interestAmt": 1,
+        "loanSchedules.principalReduction": 1,
       },
     },
   ]);
@@ -373,11 +375,13 @@ export const generateLoanCSV = async (
     voucherDate: new Date(loan.loanSchedules.voucherDate).toLocaleDateString(),
     caseNo: loan.caseNo,
     emi: loan.loanSchedules.emi,
+    interestAmount: loan.loanSchedules.interestAmt ?? 0,
+    principalReduction: loan.loanSchedules.principalReduction ?? 0,
     umrnNo: loan.umrnNo || "",
     accountNo: "99998899988",
   }));
 
-  const fields = ["voucherDate", "caseNo", "emi", "umrnNo", "accountNo"];
+  const fields = ["voucherDate", "caseNo", "emi", "interestAmount", "principalReduction", "umrnNo", "accountNo"];
   const json2csvParser = new Parser({ fields });
   return json2csvParser.parse(formattedData);
 };
