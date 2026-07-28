@@ -15,21 +15,23 @@ app.get("/", (req, res) => {
   res.send("Backend is running! 🚀");
 });
 
-app.get("/api/debug", async (req: any, res: any) => {
-  const uri = process.env.MONGO_URI;
-  const state = mongoose.connection.readyState;
-  if (!uri) { res.json({ error: "MONGO_URI not set in env", state }); return; }
+// Ensure DB connected before every API request
+app.use("/api", async (_req: any, res: any, next: any) => {
+  if (mongoose.connection.readyState >= 1) return next();
   try {
-    if (state < 1) await mongoose.connect(uri);
-    res.json({ ok: true, state: mongoose.connection.readyState, uri: uri.replace(/:([^:@]+)@/, ":***@") });
+    await mongoose.connect(process.env.MONGO_URI || "", {
+      serverSelectionTimeoutMS: 30000,
+    });
+    next();
   } catch (err: any) {
-    res.json({ error: err.message, state, uri: uri.replace(/:([^:@]+)@/, ":***@") });
+    console.error("MongoDB connection failed:", err.message);
+    res.status(503).json({ success: false, message: "Database connection failed" });
   }
 });
 
 // Routes
 app.use("/api", loanRoutes);
-app.use("/api/auth", userloginroutes )
-app.use("/api/verify", verifyRoutes )
+app.use("/api/auth", userloginroutes );
+app.use("/api/verify", verifyRoutes );
 
 export default app;
