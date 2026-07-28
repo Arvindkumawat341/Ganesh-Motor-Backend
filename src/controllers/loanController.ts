@@ -135,22 +135,20 @@ export const uploadUmrnFile = async (req: Request, res: Response) => {
     }
 
     const results: { caseNo: string; umrnNo: string }[] = [];
-    bufferToStream(req.file.buffer)
-      .pipe(csv())
-      .on("data", (data) => {
-        results.push({
-          caseNo: String(data.caseNo)?.trim(),
-          umrnNo: String(data["UMRN No"])?.trim(),
-        });
-      })
-      .on("end", async () => {
-        const summary = await loanService.processUmrnFile(results);
-        sendSuccessResponse(res, summary, "File processed successfully", 200);
-      })
-      .on("error", (err) => {
-        console.error("Error reading file:", err);
-        sendErrorResponse(res, { message: "Error reading file" }, 500);
-      });
+    await new Promise<void>((resolve, reject) => {
+      bufferToStream(req.file!.buffer)
+        .pipe(csv())
+        .on("data", (data) => {
+          results.push({
+            caseNo: String(data.caseNo)?.trim(),
+            umrnNo: String(data["UMRN No"])?.trim(),
+          });
+        })
+        .on("end", resolve)
+        .on("error", reject);
+    });
+    const summary = await loanService.processUmrnFile(results);
+    sendSuccessResponse(res, summary, "File processed successfully", 200);
   } catch (error: any) {
     console.error("Upload file error:", error);
     sendErrorResponse(res, error.message, 500);
@@ -462,7 +460,7 @@ export const bulkLedgerUpload = async (req: Request, res: Response) => {
         caseNo,
         amount,
         otherCharges,
-        "caseBulkuplode",
+        "caseBulkUpload",
         remarks
       );
 
@@ -493,8 +491,7 @@ export const getInstallmentsByCaseNo = async (req: Request, res: Response) => {
   try {
     const { caseNo } = req.params;
 
-    // Fetch loan + populated transactions
-    const loan = await Loan.findOne({ caseNo }).populate("transactions");
+    const loan = await Loan.findOne({ caseNo });
 
     if (!loan) {
       return sendErrorResponse(
@@ -504,9 +501,10 @@ export const getInstallmentsByCaseNo = async (req: Request, res: Response) => {
       );
     }
 
-    const installments = await LoanSchedule.find({ caseNo }).sort({
-      voucherDate: 1,
-    });
+    const [installments, transactions] = await Promise.all([
+      LoanSchedule.find({ caseNo }).sort({ voucherDate: 1 }),
+      Transaction.find({ caseNo }).sort({ date: 1 }),
+    ]);
 
     if (!installments || installments.length === 0) {
       return sendErrorResponse(
@@ -520,7 +518,6 @@ export const getInstallmentsByCaseNo = async (req: Request, res: Response) => {
       annualInterest = 0,
       tenure = 0,
       startDate,
-      transactions = [],
     } = loan;
     const r = annualInterest / 12 / 100;
     const EMI =
@@ -607,6 +604,16 @@ export const getInstallmentsByCaseNo = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error("Error:", error);
     return sendErrorResponse(res, error, STATUS_CODES.INTERNAL_SERVER_ERROR);
+  }
+};
+
+export const runCronJob = async (req: Request, res: Response) => {
+  try {
+    const result = await loanService.processDueInstallments();
+    sendSuccessResponse(res, result, `Cron done. Processed: ${result.processed}, Skipped: ${result.skipped}`);
+  } catch (error: any) {
+    console.error("Cron error:", error);
+    sendErrorResponse(res, error.message || "Cron failed", STATUS_CODES.INTERNAL_SERVER_ERROR);
   }
 };
 

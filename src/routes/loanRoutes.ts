@@ -33,6 +33,7 @@ router.post(
   loanController.bulkLedgerUpload
 );
 router.get("/installments/:caseNo", loanController.getInstallmentsByCaseNo);
+router.post("/run-cron", loanController.runCronJob);
 router.delete("/transactions/:id", loanController.deleteTransaction);
 router.put("/transactions/:id", loanController.editTransaction);
 

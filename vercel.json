@@ -11,5 +11,11 @@
     "index.ts": {
       "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/run-cron",
+      "schedule": "0 * * * *"
+    }
+  ]
 }

@@ -4,7 +4,6 @@ import { LoanSchedule } from "../models/LoanSchedule";
 import { Parser } from "json2csv";
 import { v4 as uuidv4 } from "uuid";
 import Transaction from "../models/Transaction";
-import cron from "node-cron";
 
 export const createLoan = async (loanData: ILoan): Promise<ILoan> => {
   const existing = await Loan.findOne({ caseNo: loanData.caseNo });
@@ -103,39 +102,6 @@ export const generateLoanSchedule = (loan: any) => {
   return schedule;
 };
 
-cron.schedule("0 0 * * *", async () => {
-  const start = new Date();
-  start.setUTCHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setUTCDate(end.getUTCDate() + 1);
-  console.log(`[${new Date().toISOString()}] Cron job started`);
-  console.log(
-    `Matching voucherDate between ${start.toISOString()} and ${end.toISOString()}`
-  );
-  try {
-    const result = await LoanSchedule.updateMany(
-      {
-        status: "Pending",
-        voucherDate: {
-          $gte: start,
-          $lt: end,
-        },
-      },
-      { $set: { status: "Due" } }
-    );
-
-    console.log(
-      `[${new Date().toISOString()}] Loan schedule updated: ${
-        result.modifiedCount
-      } record(s) set to Pending`
-    );
-  } catch (error) {
-    console.error(
-      `[${new Date().toISOString()}] Failed to update loan statuses:`,
-      error
-    );
-  }
-});
 
 export const processUmrnFile = async (
   rows: { caseNo: string; umrnNo: string }[]
@@ -345,7 +311,8 @@ export const generateLoanCSV = async (
     },
   };
   if (caseNo) {
-    matchFilter.caseNo = { $regex: caseNo, $options: "i" };
+    const escaped = caseNo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    matchFilter.caseNo = { $regex: `^${escaped}`, $options: "i" };
   }
   const loans = await Loan.aggregate([
     {
@@ -439,43 +406,63 @@ export const processTransactionData = async (rows: any[]) => {
 };
 
 
-cron.schedule("* * * * *", async () => {
-  try {
-    const activeSchedules = await LoanSchedule.find({ status: "Due" });
+export const processDueInstallments = async (): Promise<{ processed: number; skipped: number }> => {
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
 
-    for (const schedule of activeSchedules) {
-      const loan = await Loan.findOne({ caseNo: schedule.caseNo });
+  // Promote Pending → Due for all installments whose date has arrived
+  await LoanSchedule.updateMany(
+    { status: "Pending", voucherDate: { $lte: today } },
+    { $set: { status: "Due" } }
+  );
 
-      if (!loan || (loan.ledgerBalance ?? 0) < (schedule.emi ?? 0)) continue;
+  // Now fetch all Due installments (oldest first)
+  const activeSchedules = await LoanSchedule.find({
+    status: "Due",
+    voucherDate: { $lte: today },
+  }).sort({ voucherDate: 1 });
 
-      const interestToDeduct = schedule.interestAmt ?? 0;
-      const principalToDeduct = schedule.principalReduction ?? 0;
-      const totalEMI = schedule.emi;
+  if (activeSchedules.length === 0) return { processed: 0, skipped: 0 };
 
-      if (loan.futureUnearnedInterest >= interestToDeduct) {
-        loan.futureUnearnedInterest -= interestToDeduct;
-      } else {
-        continue;
-      }
-      if (loan.principalOutstands >= principalToDeduct) {
-        loan.principalOutstands -= principalToDeduct;
-      } else {
-        continue;
-      }
-      loan.ledgerBalance = (loan.ledgerBalance ?? 0) - (totalEMI ?? 0);
+  // Batch load all loans in one query — no N+1
+  const caseNos = [...new Set(activeSchedules.map((s) => s.caseNo))];
+  const loans = await Loan.find({ caseNo: { $in: caseNos } });
+  const loanMap = new Map(loans.map((l) => [l.caseNo, l]));
 
-      schedule.status = "Paid";
-      schedule.paidAmount = totalEMI ?? 0;
+  let processed = 0;
+  let skipped = 0;
 
-      await loan.save();
-      await schedule.save();
+  for (const schedule of activeSchedules) {
+    const loan = loanMap.get(schedule.caseNo as string);
+    const totalEMI = schedule.emi ?? 0;
+
+    if (!loan || (loan.ledgerBalance ?? 0) < totalEMI) {
+      skipped++;
+      continue;
     }
 
-    console.log("Loan status update completed.");
-  } catch (error) {
-    console.error("Error updating loan status:", error);
+    const interestToDeduct = schedule.interestAmt ?? 0;
+    const principalToDeduct = schedule.principalReduction ?? 0;
+
+    if (loan.futureUnearnedInterest < interestToDeduct || loan.principalOutstands < principalToDeduct) {
+      skipped++;
+      continue;
+    }
+
+    loan.futureUnearnedInterest -= interestToDeduct;
+    loan.principalOutstands -= principalToDeduct;
+    loan.ledgerBalance = (loan.ledgerBalance ?? 0) - totalEMI;
+
+    schedule.status = "Paid";
+    schedule.paidAmount = totalEMI;
+
+    await loan.save();
+    await schedule.save();
+    processed++;
   }
-});
+
+  return { processed, skipped };
+};
 
 export const addAmountToLedger = async (
   caseNo: string,
