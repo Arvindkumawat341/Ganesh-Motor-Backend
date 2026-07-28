@@ -4,12 +4,13 @@ import { connectDB } from "./src/config/db";
 
 dotenv.config();
 
-const port = process.env.PORT || 6000;
-
-
 connectDB();
 
+if (process.env.NODE_ENV !== "production") {
+  const port = process.env.PORT || 6000;
+  app.listen(port, () => {
+    console.log(`Server running on http://localhost:${port}`);
+  });
+}
 
-app.listen(port, () => {
-  console.log(`Server is running on http://localhost:${port}`);
-});
+export default app;
