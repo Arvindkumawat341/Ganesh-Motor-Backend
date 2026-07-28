@@ -134,19 +134,34 @@ export const uploadUmrnFile = async (req: Request, res: Response) => {
       return sendErrorResponse(res, { message: "No file uploaded" }, 400);
     }
 
+    const ext = req.file.originalname.split(".").pop()?.toLowerCase();
     const results: { caseNo: string; umrnNo: string }[] = [];
-    await new Promise<void>((resolve, reject) => {
-      bufferToStream(req.file!.buffer)
-        .pipe(csv())
-        .on("data", (data) => {
-          results.push({
-            caseNo: String(data.caseNo)?.trim(),
-            umrnNo: String(data["UMRN No"])?.trim(),
-          });
-        })
-        .on("end", resolve)
-        .on("error", reject);
-    });
+
+    if (ext === "xlsx" || ext === "xls") {
+      const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows: any[] = XLSX.utils.sheet_to_json(sheet, { raw: false });
+      for (const data of rows) {
+        results.push({
+          caseNo: String(data.caseNo || data["Case No"] || "").trim(),
+          umrnNo: String(data["UMRN No"] || data.umrnNo || "").trim(),
+        });
+      }
+    } else {
+      await new Promise<void>((resolve, reject) => {
+        bufferToStream(req.file!.buffer)
+          .pipe(csv())
+          .on("data", (data) => {
+            results.push({
+              caseNo: String(data.caseNo)?.trim(),
+              umrnNo: String(data["UMRN No"])?.trim(),
+            });
+          })
+          .on("end", resolve)
+          .on("error", reject);
+      });
+    }
+
     const summary = await loanService.processUmrnFile(results);
     sendSuccessResponse(res, summary, "File processed successfully", 200);
   } catch (error: any) {
