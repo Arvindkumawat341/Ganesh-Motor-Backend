@@ -442,18 +442,26 @@ export const bulkLedgerUpload = async (req: Request, res: Response) => {
     const file = req.file;
 
     if (!file) {
-      return sendErrorResponse(res, { message: "CSV file is required." }, 400);
+      return sendErrorResponse(res, { message: "File is required." }, 400);
     }
 
     const results: any[] = [];
+    const ext = file.originalname.split(".").pop()?.toLowerCase();
 
-    await new Promise<void>((resolve, reject) => {
-      bufferToStream(file.buffer)
-        .pipe(csv())
-        .on("data", (data) => results.push(data))
-        .on("end", resolve)
-        .on("error", reject);
-    });
+    if (ext === "xlsx" || ext === "xls") {
+      const workbook = XLSX.read(file.buffer, { type: "buffer" });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows: any[] = XLSX.utils.sheet_to_json(sheet, { raw: false });
+      results.push(...rows);
+    } else {
+      await new Promise<void>((resolve, reject) => {
+        bufferToStream(file.buffer)
+          .pipe(csv())
+          .on("data", (data) => results.push(data))
+          .on("end", resolve)
+          .on("error", reject);
+      });
+    }
 
     let successCount = 0;
     let failureCount = 0;
