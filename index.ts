@@ -6,11 +6,9 @@ dotenv.config();
 
 connectDB();
 
-if (process.env.NODE_ENV !== "production") {
-  const port = process.env.PORT || 6000;
-  app.listen(port, () => {
-    console.log(`Server running on http://localhost:${port}`);
-  });
-}
+const port = process.env.PORT || 6000;
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
 
 export default app;
