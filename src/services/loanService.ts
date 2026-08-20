@@ -368,7 +368,6 @@ export const processTransactionData = async (rows: any[]) => {
     const valueDate = row["Value_Date"];
     const caseNo = reference;
 
-    // Prepare transaction object
     const transaction = {
       UMRN,
       Beneficiary_Account_Holder_Name: name,
@@ -383,23 +382,17 @@ export const processTransactionData = async (rows: any[]) => {
       caseNo
     };
 
-    // Step 1: Create Transaction
     const createdTxn = await Transaction.create(transaction);
-
-    // Step 2: Check loan
     const loan = await Loan.findOne({ caseNo });
 
     if (loan) {
-      // Step 3: Push transaction._id into loan.transactions[]  
       loan.transactions = loan.transactions || [];
       loan.transactions.push(createdTxn._id as mongoose.Types.ObjectId);
 
-      // Step 4: Increase ledgerBalance only if Status = Completed
       if (Status === "Completed") {
         loan.ledgerBalance = (loan.ledgerBalance || 0) + amount;
       }
 
-      // Save
       await loan.save();
     }
   }
