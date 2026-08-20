@@ -9,7 +9,15 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static("public"));
-app.use(cors());
+app.use(cors({
+  origin: [
+    "https://ganesh-motor.maitriiinfotech.com",
+    "https://ganesh-motor-frontend.vercel.app",
+    "http://localhost:5173",
+    "http://localhost:3000",
+  ],
+  credentials: true,
+}));
 
 app.get("/", (req, res) => {
   res.send("Backend is running! 🚀");

@@ -1,0 +1,35 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          password: ${{ secrets.VPS_PASSWORD }}
+          envs: PORT,MONGO_URI,JWT_SECRET,JWT_EXPIRES_IN
+          script: |
+            cd /var/www/ganesh-motor-backend
+            git pull origin main
+            cat > .env << EOF
+            PORT=$PORT
+            MONGO_URI=$MONGO_URI
+            JWT_SECRET=$JWT_SECRET
+            JWT_EXPIRES_IN=$JWT_EXPIRES_IN
+            EOF
+            npm install --production=false
+            npm run build
+            pm2 restart ganesh-motor-backend
+        env:
+          PORT: ${{ secrets.PORT }}
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          JWT_EXPIRES_IN: ${{ secrets.JWT_EXPIRES_IN }}
