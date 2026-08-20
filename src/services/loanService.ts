@@ -522,7 +522,8 @@ export const addAmountToLedger = async (
   amount: number,
   otherCharges: number = 0,
   paymentMode: string,
-  remarks?: string
+  remarks?: string,
+  date?: Date
 ): Promise<{ success: boolean; ledgerBalance?: number; message?: string }> => {
 
   const loan = await Loan.findOne({ caseNo });
@@ -540,6 +541,7 @@ export const addAmountToLedger = async (
     otherCharges,
     paymentMode,
     remarks,
+    ...(date && { date }),
   });
   loan.transactions = loan.transactions || [];
   loan.transactions.push(transaction._id as mongoose.Types.ObjectId);

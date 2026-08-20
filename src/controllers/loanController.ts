@@ -514,6 +514,9 @@ export const bulkLedgerUpload = async (req: Request, res: Response) => {
       const otherCharges = parseFloat(record.otherCharges || "0");
       const remarks = record.remarks;
       const paymentMode = record.paymentMode?.trim() || "Cash";
+      const parsedDate = record.date ? new Date(record.date) : undefined;
+      const date =
+        parsedDate && !isNaN(parsedDate.getTime()) ? parsedDate : undefined;
 
       if (!caseNo || isNaN(amount)) {
         failureCount++;
@@ -526,7 +529,8 @@ export const bulkLedgerUpload = async (req: Request, res: Response) => {
         amount,
         otherCharges,
         paymentMode,
-        remarks
+        remarks,
+        date
       );
 
       if (result.success) successCount++;
