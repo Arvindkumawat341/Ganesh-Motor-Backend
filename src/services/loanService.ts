@@ -492,7 +492,35 @@ export const addAmountToLedger = async (
   loan.transactions.push(transaction._id as mongoose.Types.ObjectId);
   await loan.save();
 
-  return { success: true, ledgerBalance: loan.ledgerBalance };
+  // Process due installments for this case immediately after payment
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  const dueSchedules = await LoanSchedule.find({
+    caseNo,
+    status: "Due",
+    voucherDate: { $lte: today },
+  }).sort({ voucherDate: 1 });
+
+  const updatedLoan = await Loan.findOne({ caseNo });
+  if (updatedLoan) {
+    for (const schedule of dueSchedules) {
+      const emi = schedule.emi ?? 0;
+      if ((updatedLoan.ledgerBalance ?? 0) < emi) break;
+      const interest = schedule.interestAmt ?? 0;
+      const principal = schedule.principalReduction ?? 0;
+      if (updatedLoan.futureUnearnedInterest < interest || updatedLoan.principalOutstands < principal) break;
+
+      updatedLoan.ledgerBalance = (updatedLoan.ledgerBalance ?? 0) - emi;
+      updatedLoan.futureUnearnedInterest -= interest;
+      updatedLoan.principalOutstands -= principal;
+      schedule.status = "Paid";
+      schedule.paidAmount = emi;
+      await schedule.save();
+    }
+    await updatedLoan.save();
+  }
+
+  return { success: true, ledgerBalance: updatedLoan?.ledgerBalance ?? loan.ledgerBalance };
 };
 
 // Helper function to rollback EMIs for a loan by amount
