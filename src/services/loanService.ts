@@ -444,13 +444,8 @@ export const processDueInstallments = async (): Promise<{ processed: number; ski
     const interestToDeduct = schedule.interestAmt ?? 0;
     const principalToDeduct = schedule.principalReduction ?? 0;
 
-    if (loan.futureUnearnedInterest < interestToDeduct || loan.principalOutstands < principalToDeduct) {
-      skipped++;
-      continue;
-    }
-
-    loan.futureUnearnedInterest -= interestToDeduct;
-    loan.principalOutstands -= principalToDeduct;
+    loan.futureUnearnedInterest = Math.max(0, (loan.futureUnearnedInterest ?? 0) - interestToDeduct);
+    loan.principalOutstands = Math.max(0, (loan.principalOutstands ?? 0) - principalToDeduct);
     loan.ledgerBalance = (loan.ledgerBalance ?? 0) - totalEMI;
 
     schedule.status = "Paid";
@@ -508,11 +503,9 @@ export const addAmountToLedger = async (
       if ((updatedLoan.ledgerBalance ?? 0) < emi) break;
       const interest = schedule.interestAmt ?? 0;
       const principal = schedule.principalReduction ?? 0;
-      if (updatedLoan.futureUnearnedInterest < interest || updatedLoan.principalOutstands < principal) break;
-
       updatedLoan.ledgerBalance = (updatedLoan.ledgerBalance ?? 0) - emi;
-      updatedLoan.futureUnearnedInterest -= interest;
-      updatedLoan.principalOutstands -= principal;
+      updatedLoan.futureUnearnedInterest = Math.max(0, (updatedLoan.futureUnearnedInterest ?? 0) - interest);
+      updatedLoan.principalOutstands = Math.max(0, (updatedLoan.principalOutstands ?? 0) - principal);
       schedule.status = "Paid";
       schedule.paidAmount = emi;
       await schedule.save();
@@ -601,6 +594,28 @@ export const deleteTransaction = async (transactionId: string): Promise<{ succes
 
   // Delete transaction
   await Transaction.findByIdAndDelete(transactionId);
+
+  // Re-process remaining Due installments with current ledger balance
+  const caseNo = transaction.caseNo;
+  if (caseNo) {
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+    const updatedLoan = await Loan.findOne({ caseNo });
+    const dueSchedules = await LoanSchedule.find({ caseNo, status: "Due", voucherDate: { $lte: today } }).sort({ voucherDate: 1 });
+    if (updatedLoan) {
+      for (const schedule of dueSchedules) {
+        const emi = schedule.emi ?? 0;
+        if ((updatedLoan.ledgerBalance ?? 0) < emi) break;
+        updatedLoan.ledgerBalance = (updatedLoan.ledgerBalance ?? 0) - emi;
+        updatedLoan.futureUnearnedInterest = Math.max(0, (updatedLoan.futureUnearnedInterest ?? 0) - (schedule.interestAmt ?? 0));
+        updatedLoan.principalOutstands = Math.max(0, (updatedLoan.principalOutstands ?? 0) - (schedule.principalReduction ?? 0));
+        schedule.status = "Paid";
+        schedule.paidAmount = emi;
+        await schedule.save();
+      }
+      await updatedLoan.save();
+    }
+  }
 
   return { success: true };
 };
