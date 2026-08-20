@@ -16,6 +16,14 @@ function bufferToStream(buffer: Buffer): Readable {
   return Readable.from(buffer);
 }
 
+function parseDDMMYYYY(value: string): Date | undefined {
+  const match = value.trim().match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (!match) return undefined;
+  const [, day, month, year] = match;
+  const date = new Date(Number(year), Number(month) - 1, Number(day));
+  return isNaN(date.getTime()) ? undefined : date;
+}
+
 export const createLoan = async (req: Request, res: Response) => {
   try {
     const loan = await loanService.createLoan(req.body);
@@ -514,9 +522,7 @@ export const bulkLedgerUpload = async (req: Request, res: Response) => {
       const otherCharges = parseFloat(record.otherCharges || "0");
       const remarks = record.remarks;
       const paymentMode = record.paymentMode?.trim() || "Cash";
-      const parsedDate = record.date ? new Date(record.date) : undefined;
-      const date =
-        parsedDate && !isNaN(parsedDate.getTime()) ? parsedDate : undefined;
+      const date = record.date ? parseDDMMYYYY(String(record.date)) : undefined;
 
       if (!caseNo || isNaN(amount)) {
         failureCount++;
