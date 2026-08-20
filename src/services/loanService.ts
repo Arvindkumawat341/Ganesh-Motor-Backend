@@ -364,7 +364,7 @@ export const processTransactionData = async (rows: any[]) => {
     const reference = row["Transaction_Reference"];
     const VocharId = uuidv4();
     const narration = `${reference}_${name}_${UMRN}`;
-    const paymentMode = "NACH";
+    const paymentMode = row["paymentMode"]?.toString().trim() || "NACH";
     const valueDate = row["Value_Date"];
     const caseNo = reference;
 
