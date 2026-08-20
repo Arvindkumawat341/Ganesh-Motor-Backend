@@ -16,6 +16,8 @@ router.post(
 router.get("/loans-fetch", loanController.getAllLoans);
 router.get("/loans-paid", loanController.getPaidLoans);
 router.get("/loans-filter", loanController.filterLoans);
+router.get("/ledger-fetch", loanController.getLedgerLoans);
+router.get("/ledger-csv-download", loanController.downloadLedgerCSV);
 router.get("/loan-schedule-filter", loanController.filterLoanSchedule);
 router.get("/loan-schedule/:caseNo", loanController.getLoanSchedule);
 router.get("/principal-due", loanController.getPrincipalDue);

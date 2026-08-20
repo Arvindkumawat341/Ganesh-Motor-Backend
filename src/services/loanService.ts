@@ -214,6 +214,71 @@ export const filterLoans = async (filters: LoanFilter): Promise<ILoan[]> => {
   return await Loan.find(query);
 };
 
+interface LedgerFilter {
+  status?: "pending" | "paid";
+  caseNo?: string;
+  name?: string;
+  prefix?: string;
+}
+
+export const getLedgerLoans = async (
+  filters: LedgerFilter
+): Promise<ILoan[]> => {
+  const query: any = { ledgerBalance: { $gt: 0 } };
+
+  if (filters.caseNo) {
+    query.caseNo = { $regex: filters.caseNo, $options: "i" };
+  }
+
+  if (filters.name) {
+    query.name = { $regex: filters.name, $options: "i" };
+  }
+
+  if (filters.prefix) {
+    query.caseNo = { $regex: `^${filters.prefix}`, $options: "i" };
+  }
+
+  let loans = await Loan.find(query);
+
+  if (filters.status) {
+    const caseStatus = await LoanSchedule.aggregate([
+      { $group: { _id: "$caseNo", statuses: { $addToSet: "$status" } } },
+      {
+        $project: {
+          caseNo: "$_id",
+          isFullyPaid: { $setEquals: ["$statuses", ["Paid"]] },
+        },
+      },
+    ]);
+    const paidCaseNos = new Set(
+      caseStatus.filter((c) => c.isFullyPaid).map((c) => c.caseNo)
+    );
+    loans = loans.filter((loan) =>
+      filters.status === "paid"
+        ? paidCaseNos.has(loan.caseNo)
+        : !paidCaseNos.has(loan.caseNo)
+    );
+  }
+
+  return loans;
+};
+
+export const generateLedgerCSV = async (
+  filters: LedgerFilter
+): Promise<string> => {
+  const loans = await getLedgerLoans(filters);
+
+  const formattedData = loans.map((loan) => ({
+    caseNo: loan.caseNo,
+    name: loan.name,
+    ledgerBalance: loan.ledgerBalance ?? 0,
+  }));
+
+  const fields = ["caseNo", "name", "ledgerBalance"];
+  const json2csvParser = new Parser({ fields });
+  return json2csvParser.parse(formattedData);
+};
+
 export const getPrincipalOutstandingForLast30Days = async (
   date: Date
 ): Promise<number> => {

@@ -233,6 +233,47 @@ export const getPaidLoans = async (_req: Request, res: Response) => {
   }
 };
 
+export const getLedgerLoans = async (req: Request, res: Response) => {
+  try {
+    const { status, caseNo, name, prefix } = req.query;
+
+    const loans = await loanService.getLedgerLoans({
+      status: status as "pending" | "paid" | undefined,
+      caseNo: caseNo as string,
+      name: name as string,
+      prefix: prefix as string,
+    });
+
+    sendSuccessResponse(res, loans, "Ledger loans fetched successfully");
+  } catch (error: any) {
+    console.error("Error fetching ledger loans:", error);
+    sendErrorResponse(res, error, STATUS_CODES.INTERNAL_SERVER_ERROR);
+  }
+};
+
+export const downloadLedgerCSV = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const { status, caseNo, name, prefix } = req.query;
+
+    const csvData = await loanService.generateLedgerCSV({
+      status: status as "pending" | "paid" | undefined,
+      caseNo: caseNo as string,
+      name: name as string,
+      prefix: prefix as string,
+    });
+
+    res.header("Content-Type", "text/csv");
+    res.attachment("ledger_export.csv");
+    res.send(csvData);
+  } catch (error: any) {
+    console.error("Ledger CSV Download Error:", error);
+    sendErrorResponse(res, error, STATUS_CODES.INTERNAL_SERVER_ERROR);
+  }
+};
+
 export const getPrincipalDue = async (req: Request, res: Response) => {
   try {
     const { date } = req.query;
