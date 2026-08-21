@@ -16,6 +16,26 @@ function bufferToStream(buffer: Buffer): Readable {
   return Readable.from(buffer);
 }
 
+// The sheet's declared !ref range can go stale (e.g. rows appended after
+// the file's last save by some tools) and sheet_to_json only scans within
+// that range — silently truncating real rows with no error. Recompute the
+// range from the actual cells present before parsing.
+function expandSheetRange(sheet: XLSX.WorkSheet): void {
+  let maxRow = -1;
+  let maxCol = -1;
+  for (const key in sheet) {
+    if (key[0] === "!") continue;
+    const cell = XLSX.utils.decode_cell(key);
+    if (cell.r > maxRow) maxRow = cell.r;
+    if (cell.c > maxCol) maxCol = cell.c;
+  }
+  if (maxRow < 0) return;
+  const range = XLSX.utils.decode_range(sheet["!ref"] || "A1");
+  range.e.r = Math.max(range.e.r, maxRow);
+  range.e.c = Math.max(range.e.c, maxCol);
+  sheet["!ref"] = XLSX.utils.encode_range(range);
+}
+
 function parseDDMMYYYY(value: unknown): Date | undefined {
   if (value instanceof Date) {
     return isNaN(value.getTime()) ? undefined : value;
@@ -505,9 +525,22 @@ export const bulkLedgerUpload = async (req: Request, res: Response) => {
 
     if (ext === "xlsx" || ext === "xls") {
       const workbook = XLSX.read(file.buffer, { type: "buffer", cellDates: true });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rows: any[] = XLSX.utils.sheet_to_json(sheet, { raw: false });
-      results.push(...rows);
+      // Read every sheet/tab, not just the first — bulk sheets are sometimes
+      // split across multiple tabs and rows beyond the first tab were being
+      // silently dropped.
+      for (const sheetName of workbook.SheetNames) {
+        const sheet = workbook.Sheets[sheetName];
+        expandSheetRange(sheet);
+        // blankrows defaults to false in SheetJS, which silently drops any
+        // row it considers "blank" with no way to see it happened — force
+        // it to true so every row in the sheet's range is accounted for.
+        const rows: any[] = XLSX.utils.sheet_to_json(sheet, {
+          raw: false,
+          defval: "",
+          blankrows: true,
+        });
+        results.push(...rows);
+      }
     } else {
       await new Promise<void>((resolve, reject) => {
         bufferToStream(file.buffer)
@@ -527,6 +560,24 @@ export const bulkLedgerUpload = async (req: Request, res: Response) => {
     // sequential to avoid lost updates); different cases run concurrently.
     const grouped = new Map<string, any[]>();
     for (const record of results) {
+      // csv-parser stuffs any columns beyond the header into numeric "_N"
+      // keys. That only happens when a row has more fields than the header
+      // — almost always a stray/unescaped quote earlier in the CSV that
+      // swallowed the rest of the file into one row. Reject it loudly
+      // instead of silently saving a garbage transaction from column 1.
+      const hasOverflowColumns = Object.keys(record).some((k) =>
+        /^_\d+$/.test(k)
+      );
+      if (hasOverflowColumns) {
+        failureCount++;
+        failures.push(
+          `Malformed row (likely an unescaped quote earlier in the CSV merged extra rows into this one): ${JSON.stringify(
+            record
+          ).slice(0, 200)}...`
+        );
+        continue;
+      }
+
       const caseNo = record.caseNo?.trim();
       const amount = parseFloat(record.amount);
 
@@ -581,7 +632,7 @@ export const bulkLedgerUpload = async (req: Request, res: Response) => {
 
     return sendSuccessResponse(
       res,
-      { successCount, failureCount, failures },
+      { totalRows: results.length, successCount, failureCount, failures },
       "Bulk ledger upload processed.",
       200
     );

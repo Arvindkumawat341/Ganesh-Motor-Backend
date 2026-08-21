@@ -21,6 +21,22 @@ function parseDDMMYYYY(value: unknown): Date | undefined {
   return isNaN(date.getTime()) ? undefined : date;
 }
 
+function expandSheetRange(sheet: XLSX.WorkSheet): void {
+  let maxRow = -1;
+  let maxCol = -1;
+  for (const key in sheet) {
+    if (key[0] === "!") continue;
+    const cell = XLSX.utils.decode_cell(key);
+    if (cell.r > maxRow) maxRow = cell.r;
+    if (cell.c > maxCol) maxCol = cell.c;
+  }
+  if (maxRow < 0) return;
+  const range = XLSX.utils.decode_range(sheet["!ref"] || "A1");
+  range.e.r = Math.max(range.e.r, maxRow);
+  range.e.c = Math.max(range.e.c, maxCol);
+  sheet["!ref"] = XLSX.utils.encode_range(range);
+}
+
 async function run() {
   const filePath = process.argv[2];
   if (!filePath) {
@@ -36,8 +52,18 @@ async function run() {
   console.log("Connected to MongoDB");
 
   const workbook = XLSX.readFile(filePath, { cellDates: true });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const rows: any[] = XLSX.utils.sheet_to_json(sheet, { raw: false, defval: "" });
+  const rows: any[] = [];
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    expandSheetRange(sheet);
+    rows.push(
+      ...XLSX.utils.sheet_to_json(sheet, {
+        raw: false,
+        defval: "",
+        blankrows: true,
+      })
+    );
+  }
 
   console.log(`Read ${rows.length} rows from ${path.basename(filePath)}`);
 
