@@ -522,13 +522,13 @@ export const bulkLedgerUpload = async (req: Request, res: Response) => {
     let failureCount = 0;
     let failures: string[] = [];
 
+    // Group by caseNo so payments for the same case are applied in order
+    // (ledgerBalance is a read-modify-write, so same-case rows must stay
+    // sequential to avoid lost updates); different cases run concurrently.
+    const grouped = new Map<string, any[]>();
     for (const record of results) {
       const caseNo = record.caseNo?.trim();
       const amount = parseFloat(record.amount);
-      const otherCharges = parseFloat(record.otherCharges || "0");
-      const remarks = record.remarks;
-      const paymentMode = record.paymentMode?.trim() || "Cash";
-      const date = record.date ? parseDDMMYYYY(record.date) : undefined;
 
       if (!caseNo || isNaN(amount)) {
         failureCount++;
@@ -536,20 +536,47 @@ export const bulkLedgerUpload = async (req: Request, res: Response) => {
         continue;
       }
 
-      const result = await loanService.addAmountToLedger(
-        caseNo,
-        amount,
-        otherCharges,
-        paymentMode,
-        remarks,
-        date
-      );
+      if (!grouped.has(caseNo)) grouped.set(caseNo, []);
+      grouped.get(caseNo)!.push(record);
+    }
 
-      if (result.success) successCount++;
-      else {
-        failureCount++;
-        failures.push(`${caseNo}: ${result.message}`);
+    const processCaseGroup = async (caseNo: string, records: any[]) => {
+      for (const record of records) {
+        const amount = parseFloat(record.amount);
+        const otherCharges = parseFloat(record.otherCharges || "0");
+        const remarks = record.remarks;
+        const paymentMode = record.paymentMode?.trim() || "Cash";
+        const date = record.date ? parseDDMMYYYY(record.date) : undefined;
+
+        try {
+          const result = await loanService.addAmountToLedger(
+            caseNo,
+            amount,
+            otherCharges,
+            paymentMode,
+            remarks,
+            date
+          );
+
+          if (result.success) successCount++;
+          else {
+            failureCount++;
+            failures.push(`${caseNo}: ${result.message}`);
+          }
+        } catch (err: any) {
+          failureCount++;
+          failures.push(`${caseNo}: ${err.message || "Failed to process row"}`);
+        }
       }
+    };
+
+    const caseEntries = Array.from(grouped.entries());
+    const CONCURRENCY = 20;
+    for (let i = 0; i < caseEntries.length; i += CONCURRENCY) {
+      const batch = caseEntries.slice(i, i + CONCURRENCY);
+      await Promise.all(
+        batch.map(([caseNo, records]) => processCaseGroup(caseNo, records))
+      );
     }
 
     return sendSuccessResponse(

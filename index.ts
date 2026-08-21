@@ -21,8 +21,11 @@ connectDB().then(() => {
 });
 
 const port = process.env.PORT || 6000;
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
+// Bulk uploads (thousands of rows) can take a while; don't let the socket
+// get cut off mid-request.
+server.setTimeout(10 * 60 * 1000);
 
 export default app;
