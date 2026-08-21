@@ -16,8 +16,12 @@ function bufferToStream(buffer: Buffer): Readable {
   return Readable.from(buffer);
 }
 
-function parseDDMMYYYY(value: string): Date | undefined {
-  const match = value.trim().match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+function parseDDMMYYYY(value: unknown): Date | undefined {
+  if (value instanceof Date) {
+    return isNaN(value.getTime()) ? undefined : value;
+  }
+  const str = String(value ?? "").trim();
+  const match = str.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
   if (!match) return undefined;
   const [, day, month, year] = match;
   const date = new Date(Number(year), Number(month) - 1, Number(day));
@@ -498,7 +502,7 @@ export const bulkLedgerUpload = async (req: Request, res: Response) => {
     const ext = file.originalname.split(".").pop()?.toLowerCase();
 
     if (ext === "xlsx" || ext === "xls") {
-      const workbook = XLSX.read(file.buffer, { type: "buffer" });
+      const workbook = XLSX.read(file.buffer, { type: "buffer", cellDates: true });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const rows: any[] = XLSX.utils.sheet_to_json(sheet, { raw: false });
       results.push(...rows);
@@ -522,7 +526,7 @@ export const bulkLedgerUpload = async (req: Request, res: Response) => {
       const otherCharges = parseFloat(record.otherCharges || "0");
       const remarks = record.remarks;
       const paymentMode = record.paymentMode?.trim() || "Cash";
-      const date = record.date ? parseDDMMYYYY(String(record.date)) : undefined;
+      const date = record.date ? parseDDMMYYYY(record.date) : undefined;
 
       if (!caseNo || isNaN(amount)) {
         failureCount++;
