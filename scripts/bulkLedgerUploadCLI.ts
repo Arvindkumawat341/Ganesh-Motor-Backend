@@ -12,10 +12,12 @@ function parseDDMMYYYY(value: unknown): Date | undefined {
     return isNaN(value.getTime()) ? undefined : value;
   }
   const str = String(value ?? "").trim();
-  const match = str.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  const match = str.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/);
   if (!match) return undefined;
-  const [, day, month, year] = match;
-  const date = new Date(Number(year), Number(month) - 1, Number(day));
+  const [, day, month, rawYear] = match;
+  const year =
+    rawYear.length === 2 ? 2000 + Number(rawYear) : Number(rawYear);
+  const date = new Date(year, Number(month) - 1, Number(day));
   return isNaN(date.getTime()) ? undefined : date;
 }
 
