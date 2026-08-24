@@ -12,19 +12,15 @@ export const createLoan = async (loanData: ILoan): Promise<ILoan> => {
   }
   const tempLoan = new Loan(loanData);
   const scheduleData = generateLoanSchedule(tempLoan);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const futureSchedules = scheduleData.filter(
-    (item) => new Date(item.voucherDate) >= today
-  );
-  const futureUnearnedInterest = futureSchedules.reduce(
+  // Nothing has actually been paid yet at case creation, even if the EMI
+  // start date is backdated (those installments are marked "Due", not
+  // "Paid" — see generateLoanSchedule) — so the full tenure's interest is
+  // still unearned and the full loan amount is still outstanding.
+  const futureUnearnedInterest = scheduleData.reduce(
     (acc, item) => acc + item.interestAmt,
     0
   );
-  const paidPrincipal = scheduleData
-    .filter((item) => new Date(item.voucherDate) < today)
-    .reduce((sum, item) => sum + item.principalReduction, 0);
-  const principalOutstands = Math.round(loanData.loanAmount - paidPrincipal); 
+  const principalOutstands = Math.round(loanData.loanAmount);
   const loan = new Loan({
     ...loanData,
     principalOutstands,
@@ -81,8 +77,7 @@ export const generateLoanSchedule = (loan: any) => {
     dueDate.setHours(0, 0, 0, 0);
 
     let status = "Pending";
-    if (dueDate < today) status = "Paid";
-    else if (dueDate.getTime() === today.getTime()) status = "Due";
+    if (dueDate <= today) status = "Due";
 
     schedule.push({
       caseNo: loan.caseNo,

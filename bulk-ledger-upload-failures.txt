@@ -1,0 +1,15 @@
+=== Ganesh_Bulk_Ledger_Part_2.csv ===
+Row 916 (MG443): Loan not found for provided caseNo.
+Row 917 (MG447): Loan not found for provided caseNo.
+Row 918 (MG449): Loan not found for provided caseNo.
+
+=== Ganesh_Bulk_Ledger_Part_4.csv ===
+Row 693 (MG440): Loan not found for provided caseNo.
+Row 920 (MG440): Loan not found for provided caseNo.
+
+=== Ganesh_Bulk_Ledger_Part_5.csv ===
+Row 1111: Invalid data (caseNo blank): {"caseNo":"","amount":"3700","otherCharges":"0","paymentMode":"","remarks":"DEEPAK / (Lieu No.- )","date":"25-01-26"}
+
+=== FINAL_Chirag_Bulk_Ledger.csv ===
+Row 2545 (MC169): Loan not found for provided caseNo.
+Row 2546 (MC170): Loan not found for provided caseNo.
