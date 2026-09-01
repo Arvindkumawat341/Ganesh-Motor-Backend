@@ -69,8 +69,17 @@ export const verifyPassword = async (req: Request, res: Response) => {
     if (!token) {
        res.status(401).json({ message: "No token provided" });return
     }
+    if (!password) {
+       res.status(400).json({ message: "Password is required" });return
+    }
 
-    const decoded: any = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret');
+    let decoded: any;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret');
+    } catch (jwtError) {
+      res.status(401).json({ message: "Session expired. Please log in again." });return
+    }
+
     const user = await User.findById(decoded.userId);
 
     if (!user) {

@@ -470,7 +470,7 @@ export const getUploadedTransactions = async (req: Request, res: Response) => {
 
 export const updateLedgerBalance = async (req: Request, res: Response) => {
   try {
-    const { caseNo, amount, otherCharges, paymentMode, remarks } = req.body;
+    const { caseNo, amount, otherCharges, paymentMode, remarks, date } = req.body;
 
     if (!caseNo || typeof amount !== "number" || !paymentMode) {
       return sendErrorResponse(
@@ -485,7 +485,8 @@ export const updateLedgerBalance = async (req: Request, res: Response) => {
       amount,
       otherCharges,
       paymentMode,
-      remarks
+      remarks,
+      date ? new Date(date) : undefined
     );
 
     if (!result.success) {
@@ -805,13 +806,14 @@ export const deleteTransaction = async (req: Request, res: Response) => {
 export const editTransaction = async (req: Request, res: Response) => {
   try {
     const { id } = req.params as { id: string };
-    const { amount, otherCharges, paymentMode, remarks } = req.body;
+    const { amount, otherCharges, paymentMode, remarks, date } = req.body;
 
     const result = await loanService.editTransaction(id, {
       amount,
       otherCharges,
       paymentMode,
       remarks,
+      date: date ? new Date(date) : undefined,
     });
 
     if (!result.success) {

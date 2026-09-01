@@ -681,7 +681,7 @@ export const deleteTransaction = async (transactionId: string): Promise<{ succes
 
 export const editTransaction = async (
   transactionId: string,
-  updates: { amount?: number; otherCharges?: number; paymentMode?: string; remarks?: string }
+  updates: { amount?: number; otherCharges?: number; paymentMode?: string; remarks?: string; date?: Date }
 ): Promise<{ success: boolean; ledgerBalance?: number; message?: string }> => {
   const transaction = await Transaction.findById(transactionId);
   if (!transaction) {
@@ -702,6 +702,7 @@ export const editTransaction = async (
   if (updates.otherCharges !== undefined) transaction.otherCharges = updates.otherCharges;
   if (updates.paymentMode !== undefined) transaction.paymentMode = updates.paymentMode;
   if (updates.remarks !== undefined) transaction.remarks = updates.remarks;
+  if (updates.date !== undefined) transaction.date = updates.date;
   await transaction.save();
 
   // Apply new amount
