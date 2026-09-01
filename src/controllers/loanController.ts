@@ -712,10 +712,11 @@ export const getInstallmentsByCaseNo = async (req: Request, res: Response) => {
         instId: inst._id,
         date: inst.voucherDate,
         narration: "EMI Installment",
+        status: inst.status,
         stockOS: stockOSValue.toFixed(2),
         instDue: Number(inst.emi || 0),
         received: 0,
-        uiColor: "yellow",
+        uiColor: inst.status === "Paid" ? "green" : "yellow",
       });
     });
     transactions.forEach((txn: any) => {
