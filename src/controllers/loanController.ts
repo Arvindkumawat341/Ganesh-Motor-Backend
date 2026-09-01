@@ -431,7 +431,7 @@ export const getUploadedTransactions = async (req: Request, res: Response) => {
   try {
     const transactions = await Transaction.find().lean();
 
-    const caseNos = transactions.map((t) => t.Transaction_Reference);
+    const caseNos = transactions.map((t) => t.caseNo || t.Transaction_Reference);
     const loans = await Loan.find({ caseNo: { $in: caseNos } }).lean();
     const schedules = await LoanSchedule.find({ caseNo: { $in: caseNos } })
       .sort({ voucherDate: 1 })
@@ -449,7 +449,7 @@ export const getUploadedTransactions = async (req: Request, res: Response) => {
     });
 
     const result = transactions.map((tx) => {
-      const caseNo = tx.Transaction_Reference;
+      const caseNo = tx.caseNo || tx.Transaction_Reference;
       return {
         transaction: tx,
         loan: loanMap.get(caseNo) || null,

@@ -390,10 +390,12 @@ export const generateLoanCSV = async (
         _id: 0,
         caseNo: 1,
         umrnNo: 1,
+        "loanSchedules.voucherId": 1,
         "loanSchedules.voucherDate": 1,
         "loanSchedules.emi": 1,
         "loanSchedules.interestAmt": 1,
         "loanSchedules.principalReduction": 1,
+        "loanSchedules.status": 1,
       },
     },
   ]);
@@ -401,14 +403,16 @@ export const generateLoanCSV = async (
   const formattedData = loans.map((loan) => ({
     voucherDate: new Date(loan.loanSchedules.voucherDate).toLocaleDateString(),
     caseNo: loan.caseNo,
+    emiNo: loan.loanSchedules.voucherId?.split("/")[1] || "",
     emi: loan.loanSchedules.emi,
+    status: loan.loanSchedules.status || "",
     interestAmount: loan.loanSchedules.interestAmt ?? 0,
     principalReduction: loan.loanSchedules.principalReduction ?? 0,
     umrnNo: loan.umrnNo || "",
     accountNo: "99998899988",
   }));
 
-  const fields = ["voucherDate", "caseNo", "emi", "interestAmount", "principalReduction", "umrnNo", "accountNo"];
+  const fields = ["voucherDate", "caseNo", "emiNo", "emi", "status", "interestAmount", "principalReduction", "umrnNo", "accountNo"];
   const json2csvParser = new Parser({ fields });
   return json2csvParser.parse(formattedData);
 };
