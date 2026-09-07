@@ -417,6 +417,37 @@ export const generateLoanCSV = async (
   return json2csvParser.parse(formattedData);
 };
 
+// Sweeps a loan's ledgerBalance against its Due schedules (oldest first),
+// marking each one Paid once enough balance has landed to cover it. Shared
+// by every payment-entry path (NACH transaction upload, bulk ledger upload)
+// so a payment is reflected in the schedule immediately, not just the ledger.
+const applyLedgerToSchedules = async (caseNo: string) => {
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+  const dueSchedules = await LoanSchedule.find({
+    caseNo,
+    status: "Due",
+    voucherDate: { $lte: today },
+  }).sort({ voucherDate: 1 });
+
+  const loan = await Loan.findOne({ caseNo });
+  if (!loan) return;
+
+  for (const schedule of dueSchedules) {
+    const emi = schedule.emi ?? 0;
+    if ((loan.ledgerBalance ?? 0) < emi) break;
+    const interest = schedule.interestAmt ?? 0;
+    const principal = schedule.principalReduction ?? 0;
+    loan.ledgerBalance = (loan.ledgerBalance ?? 0) - emi;
+    loan.futureUnearnedInterest = Math.max(0, (loan.futureUnearnedInterest ?? 0) - interest);
+    loan.principalOutstands = Math.max(0, (loan.principalOutstands ?? 0) - principal);
+    schedule.status = "Paid";
+    schedule.paidAmount = emi;
+    await schedule.save();
+  }
+  await loan.save();
+};
+
 export const processTransactionData = async (rows: any[]) => {
   const currentUploadDate = new Date();
 
@@ -424,7 +455,7 @@ export const processTransactionData = async (rows: any[]) => {
     const Status = row["Status"];
     const UMRN = row["UMRN"];
     const name = row["Beneficiary_Account_Holder_Name"];
-    const amount = Number(row["Amount"]);
+    const amount = Number(String(row["Amount"] ?? "").replace(/,/g, ""));
     const reference = row["Transaction_Reference"];
     const VocharId = uuidv4();
     const narration = `${reference}_${name}_${UMRN}`;
@@ -458,6 +489,10 @@ export const processTransactionData = async (rows: any[]) => {
       }
 
       await loan.save();
+
+      if (Status === "Completed") {
+        await applyLedgerToSchedules(caseNo);
+      }
     }
   }
 };
@@ -547,30 +582,8 @@ export const addAmountToLedger = async (
   await loan.save();
 
   // Process due installments for this case immediately after payment
-  const today = new Date();
-  today.setHours(23, 59, 59, 999);
-  const dueSchedules = await LoanSchedule.find({
-    caseNo,
-    status: "Due",
-    voucherDate: { $lte: today },
-  }).sort({ voucherDate: 1 });
-
+  await applyLedgerToSchedules(caseNo);
   const updatedLoan = await Loan.findOne({ caseNo });
-  if (updatedLoan) {
-    for (const schedule of dueSchedules) {
-      const emi = schedule.emi ?? 0;
-      if ((updatedLoan.ledgerBalance ?? 0) < emi) break;
-      const interest = schedule.interestAmt ?? 0;
-      const principal = schedule.principalReduction ?? 0;
-      updatedLoan.ledgerBalance = (updatedLoan.ledgerBalance ?? 0) - emi;
-      updatedLoan.futureUnearnedInterest = Math.max(0, (updatedLoan.futureUnearnedInterest ?? 0) - interest);
-      updatedLoan.principalOutstands = Math.max(0, (updatedLoan.principalOutstands ?? 0) - principal);
-      schedule.status = "Paid";
-      schedule.paidAmount = emi;
-      await schedule.save();
-    }
-    await updatedLoan.save();
-  }
 
   return { success: true, ledgerBalance: updatedLoan?.ledgerBalance ?? loan.ledgerBalance };
 };
