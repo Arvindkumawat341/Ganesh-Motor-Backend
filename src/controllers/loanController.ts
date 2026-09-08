@@ -723,7 +723,9 @@ export const getInstallmentsByCaseNo = async (req: Request, res: Response) => {
       merged.push({
         type: "txn",
         txnId: txn._id,
-        date: txn.date,
+        // NACH transactions carry the real payment date in Value_Date
+        // ("DD/MM/YYYY"); txn.date is just when the row was uploaded.
+        date: parseDDMMYYYY(txn.Value_Date) || txn.date,
         narration: txn.paymentMode,
         stockOS: stock.toFixed(2),
         instDue: 0,
