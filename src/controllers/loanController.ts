@@ -454,33 +454,42 @@ export const getUploadedTransactions = async (req: Request, res: Response) => {
   try {
     const transactions = await Transaction.find().lean();
 
-    const caseNos = transactions.map((t) => t.caseNo || t.Transaction_Reference);
-    const loans = await Loan.find({ caseNo: { $in: caseNos } }).lean();
-    const schedules = await LoanSchedule.find({ caseNo: { $in: caseNos } })
-      .sort({ voucherDate: 1 })
-      .lean();
+    const caseNos = [
+      ...new Set(transactions.map((t) => t.caseNo || t.Transaction_Reference)),
+    ];
+    const [loans, schedules] = await Promise.all([
+      Loan.find(
+        { caseNo: { $in: caseNos } },
+        { caseNo: 1, name: 1 }
+      ).lean(),
+      LoanSchedule.find(
+        { caseNo: { $in: caseNos } },
+        { caseNo: 1, voucherId: 1, voucherDate: 1, status: 1 }
+      )
+        .sort({ voucherDate: 1 })
+        .lean(),
+    ]);
 
-    const loanMap = new Map();
-    loans.forEach((loan) => loanMap.set(loan.caseNo, loan));
+    // Every transaction for a case shares that case's loan/schedule — key
+    // them by caseNo instead of duplicating the (often 20+ row) schedule
+    // list onto each of the potentially thousands of transaction rows.
+    const loanByCase: Record<string, { name?: string }> = {};
+    loans.forEach((loan) => {
+      loanByCase[loan.caseNo] = { name: loan.name };
+    });
 
-    const scheduleMap = new Map();
+    const schedulesByCase: Record<string, any[]> = {};
     schedules.forEach((schedule) => {
-      if (!scheduleMap.has(schedule.caseNo)) {
-        scheduleMap.set(schedule.caseNo, []);
-      }
-      scheduleMap.get(schedule.caseNo).push(schedule);
+      const caseNo = schedule.caseNo as string;
+      if (!schedulesByCase[caseNo]) schedulesByCase[caseNo] = [];
+      schedulesByCase[caseNo].push(schedule);
     });
 
-    const result = transactions.map((tx) => {
-      const caseNo = tx.caseNo || tx.Transaction_Reference;
-      return {
-        transaction: tx,
-        loan: loanMap.get(caseNo) || null,
-        schedules: scheduleMap.get(caseNo) || [],
-      };
-    });
-
-    sendSuccessResponse(res, result, "Transactions fetched successfully");
+    sendSuccessResponse(
+      res,
+      { transactions, loans: loanByCase, schedules: schedulesByCase },
+      "Transactions fetched successfully"
+    );
   } catch (error: any) {
     console.error("Error fetching transactions:", error);
     sendErrorResponse(
