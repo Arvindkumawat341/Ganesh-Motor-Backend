@@ -47,6 +47,29 @@ function parseDDMMYYYY(value: unknown): Date | undefined {
   const year =
     rawYear.length === 2 ? 2000 + Number(rawYear) : Number(rawYear);
   const date = new Date(year, Number(month) - 1, Number(day));
+  // new Date() silently rolls an out-of-range month/day into later months/
+  // years instead of failing (e.g. month 30 becomes +2 years, month 6) —
+  // reject that instead of returning a nonsense date.
+  if (date.getMonth() !== Number(month) - 1) return undefined;
+  return isNaN(date.getTime()) ? undefined : date;
+}
+
+// Bulk ledger sheets use US-style M/D/YYYY (e.g. "7/30/2026" = July 30) —
+// unlike the NACH return files, which are DD/MM/YYYY. Reusing
+// parseDDMMYYYY here silently swapped day/month (and could roll the date
+// years into the future whenever the true day exceeded 12).
+function parseMDYYYY(value: unknown): Date | undefined {
+  if (value instanceof Date) {
+    return isNaN(value.getTime()) ? undefined : value;
+  }
+  const str = String(value ?? "").trim();
+  const match = str.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/);
+  if (!match) return undefined;
+  const [, month, day, rawYear] = match;
+  const year =
+    rawYear.length === 2 ? 2000 + Number(rawYear) : Number(rawYear);
+  const date = new Date(year, Number(month) - 1, Number(day));
+  if (date.getMonth() !== Number(month) - 1) return undefined;
   return isNaN(date.getTime()) ? undefined : date;
 }
 
@@ -598,7 +621,7 @@ export const bulkLedgerUpload = async (req: Request, res: Response) => {
         const otherCharges = parseFloat(record.otherCharges || "0");
         const remarks = record.remarks;
         const paymentMode = record.paymentMode?.trim() || "Cash";
-        const date = record.date ? parseDDMMYYYY(record.date) : undefined;
+        const date = record.date ? parseMDYYYY(record.date) : undefined;
 
         try {
           const result = await loanService.addAmountToLedger(

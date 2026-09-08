@@ -7,6 +7,8 @@ import * as loanService from "../src/services/loanService";
 
 dotenv.config();
 
+// Bulk ledger sheets use US-style M/D/YYYY (e.g. "7/30/2026" = July 30),
+// not DD/MM/YYYY — see loanController.ts's parseMDYYYY for the same fix.
 function parseDDMMYYYY(value: unknown): Date | undefined {
   if (value instanceof Date) {
     return isNaN(value.getTime()) ? undefined : value;
@@ -14,10 +16,11 @@ function parseDDMMYYYY(value: unknown): Date | undefined {
   const str = String(value ?? "").trim();
   const match = str.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/);
   if (!match) return undefined;
-  const [, day, month, rawYear] = match;
+  const [, month, day, rawYear] = match;
   const year =
     rawYear.length === 2 ? 2000 + Number(rawYear) : Number(rawYear);
   const date = new Date(year, Number(month) - 1, Number(day));
+  if (date.getMonth() !== Number(month) - 1) return undefined;
   return isNaN(date.getTime()) ? undefined : date;
 }
 
