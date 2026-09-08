@@ -377,6 +377,7 @@ export const filterLoanSchedule = async (
         startDate: 1,
         emiDate: 1,
         umrnNo: 1,
+        ledgerBalance: 1,
         "loanSchedules.voucherId": 1,
         "loanSchedules.voucherDate": 1,
         "loanSchedules.emi": 1,
