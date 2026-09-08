@@ -218,7 +218,7 @@ interface LedgerFilter {
 
 export const getLedgerLoans = async (
   filters: LedgerFilter
-): Promise<ILoan[]> => {
+): Promise<any[]> => {
   const query: any = { ledgerBalance: { $gt: 0 } };
 
   if (filters.caseNo) {
@@ -255,7 +255,36 @@ export const getLedgerLoans = async (
     );
   }
 
-  return loans;
+  // EMI amount + how much is currently Due, so the ledger view can show
+  // whether a case's positive balance is just round-off leftover or an
+  // actual surplus sitting unapplied (ledgerBalance beyond what's Due —
+  // the same pattern as a stuck/unswept payment).
+  const caseNos = loans.map((l) => l.caseNo);
+  const scheduleStats = await LoanSchedule.aggregate([
+    { $match: { caseNo: { $in: caseNos } } },
+    {
+      $group: {
+        _id: "$caseNo",
+        emi: { $first: "$emi" },
+        dueAmount: {
+          $sum: { $cond: [{ $eq: ["$status", "Due"] }, "$emi", 0] },
+        },
+      },
+    },
+  ]);
+  const statsMap = new Map(scheduleStats.map((s) => [s._id, s]));
+
+  return loans.map((loan) => {
+    const stats = statsMap.get(loan.caseNo) || { emi: 0, dueAmount: 0 };
+    const ledgerBalance = loan.ledgerBalance ?? 0;
+    const dueAmount = stats.dueAmount ?? 0;
+    return {
+      ...loan.toObject(),
+      emiAmount: stats.emi ?? 0,
+      dueAmount,
+      excessAmount: Math.max(0, ledgerBalance - dueAmount),
+    };
+  });
 };
 
 export const generateLedgerCSV = async (
@@ -267,9 +296,12 @@ export const generateLedgerCSV = async (
     caseNo: loan.caseNo,
     name: loan.name,
     ledgerBalance: loan.ledgerBalance ?? 0,
+    emiAmount: loan.emiAmount ?? 0,
+    dueAmount: loan.dueAmount ?? 0,
+    excessAmount: loan.excessAmount ?? 0,
   }));
 
-  const fields = ["caseNo", "name", "ledgerBalance"];
+  const fields = ["caseNo", "name", "ledgerBalance", "emiAmount", "dueAmount", "excessAmount"];
   const json2csvParser = new Parser({ fields });
   return json2csvParser.parse(formattedData);
 };
