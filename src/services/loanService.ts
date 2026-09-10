@@ -362,6 +362,30 @@ export const filterLoanSchedule = async (
         as: "loanSchedules",
       },
     },
+    {
+      // Count paid/due across ALL of the case's installments before the
+      // date filter narrows loanSchedules down to just the matching one —
+      // so the report can show "12 paid, 5 due" alongside the row, not
+      // just the single installment that fell in the selected range.
+      $addFields: {
+        installmentsPaid: {
+          $size: {
+            $filter: {
+              input: "$loanSchedules",
+              cond: { $eq: ["$$this.status", "Paid"] },
+            },
+          },
+        },
+        installmentsDue: {
+          $size: {
+            $filter: {
+              input: "$loanSchedules",
+              cond: { $eq: ["$$this.status", "Due"] },
+            },
+          },
+        },
+      },
+    },
     { $unwind: "$loanSchedules" },
     { $match: filter },
     { $sort: { "loanSchedules.voucherDate": 1 } },
@@ -378,6 +402,8 @@ export const filterLoanSchedule = async (
         emiDate: 1,
         umrnNo: 1,
         ledgerBalance: 1,
+        installmentsPaid: 1,
+        installmentsDue: 1,
         "loanSchedules.voucherId": 1,
         "loanSchedules.voucherDate": 1,
         "loanSchedules.emi": 1,
