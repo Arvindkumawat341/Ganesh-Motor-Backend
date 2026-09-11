@@ -11,6 +11,7 @@ import {
 import XLSX from "xlsx";
 import Transaction from "../models/Transaction";
 import { Readable } from "stream";
+import { generateNOCBuffer } from "../utils/nocGenerator";
 
 function bufferToStream(buffer: Buffer): Readable {
   return Readable.from(buffer);
@@ -290,12 +291,22 @@ export const getPaidLoans = async (_req: Request, res: Response) => {
   }
 };
 
+export const getForeclosedLoans = async (_req: Request, res: Response) => {
+  try {
+    const loans = await loanService.getForeclosedLoans();
+    sendSuccessResponse(res, loans, "Foreclosed loans fetched successfully");
+  } catch (error: any) {
+    console.error("Error fetching foreclosed loans:", error);
+    sendErrorResponse(res, error, STATUS_CODES.INTERNAL_SERVER_ERROR);
+  }
+};
+
 export const getLedgerLoans = async (req: Request, res: Response) => {
   try {
     const { status, caseNo, name, prefix } = req.query;
 
     const loans = await loanService.getLedgerLoans({
-      status: status as "pending" | "paid" | undefined,
+      status: status as "pending" | "paid" | "foreclosed" | undefined,
       caseNo: caseNo as string,
       name: name as string,
       prefix: prefix as string,
@@ -316,7 +327,7 @@ export const downloadLedgerCSV = async (
     const { status, caseNo, name, prefix } = req.query;
 
     const csvData = await loanService.generateLedgerCSV({
-      status: status as "pending" | "paid" | undefined,
+      status: status as "pending" | "paid" | "foreclosed" | undefined,
       caseNo: caseNo as string,
       name: name as string,
       prefix: prefix as string,
@@ -835,6 +846,105 @@ export const deleteTransaction = async (req: Request, res: Response) => {
       error.message || "Internal Server Error",
       500
     );
+  }
+};
+
+export const foreclosureLoan = async (req: Request, res: Response) => {
+  try {
+    const { caseNo } = req.params;
+    const { charges, paymentMode, remarks } = req.body;
+
+    const result = await loanService.foreclosureLoan(
+      caseNo,
+      Number(charges) || 0,
+      paymentMode || "Cash",
+      remarks
+    );
+
+    if (!result.success) {
+      return sendErrorResponse(res, { message: result.message as string }, 400);
+    }
+
+    return sendSuccessResponse(
+      res,
+      { payoffAmount: result.payoffAmount, loan: result.loan },
+      "Loan foreclosed successfully.",
+      200
+    );
+  } catch (error: any) {
+    console.error("Error foreclosing loan:", error);
+    return sendErrorResponse(res, error.message || "Internal Server Error", 500);
+  }
+};
+
+export const unforecloseLoan = async (req: Request, res: Response) => {
+  try {
+    const { caseNo } = req.params;
+
+    const result = await loanService.unforecloseLoan(caseNo);
+
+    if (!result.success) {
+      return sendErrorResponse(res, { message: result.message as string }, 400);
+    }
+
+    return sendSuccessResponse(res, { loan: result.loan }, "Foreclosure undone.", 200);
+  } catch (error: any) {
+    console.error("Error undoing foreclosure:", error);
+    return sendErrorResponse(res, error.message || "Internal Server Error", 500);
+  }
+};
+
+export const foreclosureLoansBulk = async (req: Request, res: Response) => {
+  try {
+    const { caseNos } = req.body;
+    if (!Array.isArray(caseNos) || caseNos.length === 0) {
+      return sendErrorResponse(res, { message: "caseNos array is required." }, STATUS_CODES.BAD_REQUEST);
+    }
+
+    const result = await loanService.foreclosureLoansBulk(caseNos);
+
+    return sendSuccessResponse(
+      res,
+      result,
+      `Foreclosed ${result.successCaseNos.length} of ${caseNos.length} case(s).`,
+      200
+    );
+  } catch (error: any) {
+    console.error("Bulk foreclosure error:", error);
+    return sendErrorResponse(res, error.message || "Internal Server Error", 500);
+  }
+};
+
+export const downloadNOC = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { caseNo } = req.params;
+    const loan = await Loan.findOne({ caseNo });
+    if (!loan) {
+      sendErrorResponse(res, { message: "Loan not found" }, STATUS_CODES.NOT_FOUND);
+      return;
+    }
+
+    const schedules = await LoanSchedule.find({ caseNo });
+    const isFullyPaid =
+      schedules.length > 0 &&
+      schedules.every((s) => s.status === "Paid" || s.status === "Foreclosed");
+
+    if (loan.status !== "foreclosed" && !isFullyPaid) {
+      sendErrorResponse(
+        res,
+        { message: "NOC can only be generated once the loan is fully paid or foreclosed." },
+        STATUS_CODES.BAD_REQUEST
+      );
+      return;
+    }
+
+    const pdfBuffer = await generateNOCBuffer(loan);
+    res.header("Content-Type", "application/pdf");
+    res.attachment(`NOC_${loan.caseNo}.pdf`);
+    res.send(pdfBuffer);
+  } catch (error: any) {
+    console.error("NOC generation error:", error);
+    sendErrorResponse(res, error.message || "Internal Server Error", STATUS_CODES.INTERNAL_SERVER_ERROR);
   }
 };
 

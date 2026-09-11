@@ -15,6 +15,7 @@ router.post(
 );
 router.get("/loans-fetch", loanController.getAllLoans);
 router.get("/loans-paid", loanController.getPaidLoans);
+router.get("/loans-foreclosed", loanController.getForeclosedLoans);
 router.get("/loans-filter", loanController.filterLoans);
 router.get("/ledger-fetch", loanController.getLedgerLoans);
 router.get("/ledger-csv-download", loanController.downloadLedgerCSV);
@@ -39,5 +40,9 @@ router.get("/run-cron", loanController.runCronJob);
 router.post("/run-cron", loanController.runCronJob);
 router.delete("/transactions/:id", loanController.deleteTransaction);
 router.put("/transactions/:id", loanController.editTransaction);
+router.post("/loan/:caseNo/foreclose", loanController.foreclosureLoan);
+router.post("/loan/:caseNo/unforeclose", loanController.unforecloseLoan);
+router.post("/loans/foreclose-bulk", loanController.foreclosureLoansBulk);
+router.get("/loan/:caseNo/noc-download", loanController.downloadNOC);
 
 export default router;

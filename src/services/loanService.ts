@@ -152,9 +152,13 @@ export const getAllLoans = async (): Promise<ILoan[]> => {
     }
   ]);
   const pendingCaseNos = caseStatus
-    .filter(c => !c.isFullyPaid) 
+    .filter(c => !c.isFullyPaid)
     .map(c => c.caseNo);
-  return Loan.find({ caseNo: { $in: pendingCaseNos } });
+  // A foreclosed case's schedule is never a pure {"Paid"} set (the closed-
+  // out rows are "Foreclosed"), so it already lands here — filter it out,
+  // it belongs in the dedicated Foreclosed tab instead.
+  const loans = await Loan.find({ caseNo: { $in: pendingCaseNos } });
+  return loans.filter((loan) => loan.status !== "foreclosed");
 };
 
 export const getPaidLoans = async (): Promise<ILoan[]> => {
@@ -168,20 +172,23 @@ export const getPaidLoans = async (): Promise<ILoan[]> => {
     {
       $project: {
         caseNo: "$_id",
-        isFullyPaid: { $setEquals: ["$statuses", ["Paid"]] } 
+        isFullyPaid: { $setEquals: ["$statuses", ["Paid"]] }
       }
     }
   ]);
 
   const paidCaseNos = caseStatus
-    .filter(c => c.isFullyPaid) 
+    .filter(c => c.isFullyPaid)
     .map(c => c.caseNo);
 
- 
-
-  return Loan.find({ caseNo: { $in: paidCaseNos } });
+  const loans = await Loan.find({ caseNo: { $in: paidCaseNos } });
+  return loans.filter((loan) => loan.status !== "foreclosed");
 };
 
+
+export const getForeclosedLoans = async (): Promise<ILoan[]> => {
+  return Loan.find({ status: "foreclosed" });
+};
 
 interface LoanFilter {
   caseNo?: string;
@@ -210,7 +217,7 @@ export const filterLoans = async (filters: LoanFilter): Promise<ILoan[]> => {
 };
 
 interface LedgerFilter {
-  status?: "pending" | "paid";
+  status?: "pending" | "paid" | "foreclosed";
   caseNo?: string;
   name?: string;
   prefix?: string;
@@ -219,7 +226,14 @@ interface LedgerFilter {
 export const getLedgerLoans = async (
   filters: LedgerFilter
 ): Promise<any[]> => {
-  const query: any = { ledgerBalance: { $gt: 0 } };
+  // The Foreclosed tab lists every foreclosed case, not just ones sitting
+  // on a leftover ledger balance — foreclosure zeroes principalOutstands
+  // but doesn't touch ledgerBalance, so most foreclosed cases would be
+  // filtered out by the ledgerBalance>0 check below.
+  const query: any =
+    filters.status === "foreclosed"
+      ? { status: "foreclosed" }
+      : { ledgerBalance: { $gt: 0 } };
 
   if (filters.caseNo) {
     query.caseNo = { $regex: filters.caseNo, $options: "i" };
@@ -235,7 +249,7 @@ export const getLedgerLoans = async (
 
   let loans = await Loan.find(query);
 
-  if (filters.status) {
+  if (filters.status === "pending" || filters.status === "paid") {
     const caseStatus = await LoanSchedule.aggregate([
       { $group: { _id: "$caseNo", statuses: { $addToSet: "$status" } } },
       {
@@ -248,11 +262,15 @@ export const getLedgerLoans = async (
     const paidCaseNos = new Set(
       caseStatus.filter((c) => c.isFullyPaid).map((c) => c.caseNo)
     );
-    loans = loans.filter((loan) =>
-      filters.status === "paid"
+    // Foreclosed cases have their own tab — never show them under Pending
+    // or Paid, regardless of how much of their schedule got marked "Paid"
+    // before the foreclosure happened.
+    loans = loans.filter((loan) => {
+      if (loan.status === "foreclosed") return false;
+      return filters.status === "paid"
         ? paidCaseNos.has(loan.caseNo)
-        : !paidCaseNos.has(loan.caseNo)
-    );
+        : !paidCaseNos.has(loan.caseNo);
+    });
   }
 
   // EMI amount + how much is currently Due, so the ledger view can show
@@ -749,6 +767,133 @@ export const deleteTransaction = async (transactionId: string): Promise<{ succes
   }
 
   return { success: true };
+};
+
+// Closes a loan out mid-tenure: pays off the remaining principal in one
+// shot instead of walking the schedule EMI-by-EMI like every other payment
+// path does. Remaining Pending/Due rows are marked "Foreclosed" (not
+// "Paid") so reports can tell a case that ran its full term apart from one
+// that was paid off early.
+export const foreclosureLoan = async (
+  caseNo: string,
+  charges: number = 0,
+  paymentMode: string = "Cash",
+  remarks?: string
+): Promise<{ success: boolean; message?: string; payoffAmount?: number; loan?: ILoan }> => {
+  const loan = await Loan.findOne({ caseNo });
+  if (!loan) {
+    return { success: false, message: "Loan not found for provided caseNo." };
+  }
+  if (loan.status === "foreclosed") {
+    return { success: false, message: "Loan is already foreclosed." };
+  }
+
+  const remainingSchedules = await LoanSchedule.find({
+    caseNo,
+    status: { $in: ["Pending", "Due"] },
+  });
+  if (remainingSchedules.length === 0) {
+    return { success: false, message: "Loan has no remaining installments — it is already fully paid." };
+  }
+
+  const payoffAmount = Math.round((loan.principalOutstands ?? 0) + charges);
+
+  // Only flip status — principalDue/futureUnearnedInterestLoanSchedule stay
+  // as the original amortization schedule computed them, so an unforeclose
+  // can restore these rows exactly instead of having to re-derive numbers
+  // that were destroyed here.
+  await LoanSchedule.updateMany(
+    { caseNo, status: { $in: ["Pending", "Due"] } },
+    { $set: { status: "Foreclosed" } }
+  );
+
+  const transaction = await Transaction.create({
+    caseNo,
+    amount: payoffAmount,
+    otherCharges: charges,
+    paymentMode,
+    remarks: remarks || "Loan foreclosure settlement",
+  });
+  loan.transactions = loan.transactions || [];
+  loan.transactions.push(transaction._id as mongoose.Types.ObjectId);
+  loan.foreclosureTransactionId = transaction._id as mongoose.Types.ObjectId;
+
+  // Snapshot so unforecloseLoan can put these back exactly as they were.
+  loan.preForeclosurePrincipalOutstands = loan.principalOutstands ?? 0;
+  loan.preForeclosureFutureUnearnedInterest = loan.futureUnearnedInterest ?? 0;
+
+  loan.principalOutstands = 0;
+  loan.futureUnearnedInterest = 0;
+  loan.status = "foreclosed";
+  loan.foreclosureDate = new Date();
+  loan.foreclosureAmount = payoffAmount;
+  loan.foreclosureCharges = charges;
+  await loan.save();
+
+  return { success: true, payoffAmount, loan };
+};
+
+// Reverses foreclosureLoan: restores the closed-out schedule rows to
+// Pending/Due (whichever their date implies today) and puts the
+// pre-foreclosure principal/interest snapshot back, then deletes the
+// foreclosure payoff transaction it logged.
+export const unforecloseLoan = async (
+  caseNo: string
+): Promise<{ success: boolean; message?: string; loan?: ILoan }> => {
+  const loan = await Loan.findOne({ caseNo });
+  if (!loan) {
+    return { success: false, message: "Loan not found for provided caseNo." };
+  }
+  if (loan.status !== "foreclosed") {
+    return { success: false, message: "Loan is not foreclosed." };
+  }
+
+  const today = new Date();
+  today.setHours(23, 59, 59, 999);
+
+  const foreclosedSchedules = await LoanSchedule.find({ caseNo, status: "Foreclosed" });
+  for (const schedule of foreclosedSchedules) {
+    schedule.status = schedule.voucherDate && schedule.voucherDate <= today ? "Due" : "Pending";
+    await schedule.save();
+  }
+
+  loan.principalOutstands = loan.preForeclosurePrincipalOutstands ?? loan.principalOutstands;
+  loan.futureUnearnedInterest = loan.preForeclosureFutureUnearnedInterest ?? loan.futureUnearnedInterest;
+  loan.status = "active";
+  loan.foreclosureDate = undefined;
+  loan.foreclosureAmount = undefined;
+  loan.foreclosureCharges = undefined;
+  loan.preForeclosurePrincipalOutstands = undefined;
+  loan.preForeclosureFutureUnearnedInterest = undefined;
+
+  if (loan.foreclosureTransactionId) {
+    await Transaction.findByIdAndDelete(loan.foreclosureTransactionId);
+    loan.transactions = (loan.transactions || []).filter(
+      (id) => !id.equals(loan.foreclosureTransactionId as mongoose.Types.ObjectId)
+    );
+    loan.foreclosureTransactionId = undefined;
+  }
+
+  await loan.save();
+  return { success: true, loan };
+};
+
+export const foreclosureLoansBulk = async (
+  caseNos: string[]
+): Promise<{ successCaseNos: string[]; failed: { caseNo: string; message: string }[] }> => {
+  const successCaseNos: string[] = [];
+  const failed: { caseNo: string; message: string }[] = [];
+
+  for (const caseNo of caseNos) {
+    const result = await foreclosureLoan(caseNo);
+    if (result.success) {
+      successCaseNos.push(caseNo);
+    } else {
+      failed.push({ caseNo, message: result.message || "Failed to foreclose" });
+    }
+  }
+
+  return { successCaseNos, failed };
 };
 
 export const editTransaction = async (

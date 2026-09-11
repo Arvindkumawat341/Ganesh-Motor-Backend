@@ -25,6 +25,13 @@ export interface ILoan extends Document {
   addharNo:string;
   panNo:string;
   transactions?: mongoose.Types.ObjectId[];
+  status: "active" | "foreclosed";
+  foreclosureDate?: Date;
+  foreclosureAmount?: number;
+  foreclosureCharges?: number;
+  foreclosureTransactionId?: mongoose.Types.ObjectId;
+  preForeclosurePrincipalOutstands?: number;
+  preForeclosureFutureUnearnedInterest?: number;
 }
 
 const loanSchema: Schema = new Schema({
@@ -50,6 +57,13 @@ const loanSchema: Schema = new Schema({
   bankbranch: { type: String },
   addharNo: { type: String },
   panNo: { type: String },
+  status: { type: String, enum: ["active", "foreclosed"], default: "active" },
+  foreclosureDate: { type: Date },
+  foreclosureAmount: { type: Number },
+  foreclosureCharges: { type: Number, default: 0 },
+  foreclosureTransactionId: { type: mongoose.Schema.Types.ObjectId, ref: "Transaction" },
+  preForeclosurePrincipalOutstands: { type: Number },
+  preForeclosureFutureUnearnedInterest: { type: Number },
 
   loanScheduleIds: [
     { type: mongoose.Schema.Types.ObjectId, ref: "LoanSchedule" },
