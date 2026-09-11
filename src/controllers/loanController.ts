@@ -11,7 +11,6 @@ import {
 import XLSX from "xlsx";
 import Transaction from "../models/Transaction";
 import { Readable } from "stream";
-import { generateNOCBuffer } from "../utils/nocGenerator";
 
 function bufferToStream(buffer: Buffer): Readable {
   return Readable.from(buffer);
@@ -925,38 +924,6 @@ export const foreclosureLoansBulk = async (req: Request, res: Response) => {
   }
 };
 
-export const downloadNOC = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { caseNo } = req.params;
-    const loan = await Loan.findOne({ caseNo });
-    if (!loan) {
-      sendErrorResponse(res, { message: "Loan not found" }, STATUS_CODES.NOT_FOUND);
-      return;
-    }
-
-    const schedules = await LoanSchedule.find({ caseNo });
-    const isFullyPaid =
-      schedules.length > 0 &&
-      schedules.every((s) => s.status === "Paid" || s.status === "Foreclosed");
-
-    if (loan.status !== "foreclosed" && !isFullyPaid) {
-      sendErrorResponse(
-        res,
-        { message: "NOC can only be generated once the loan is fully paid or foreclosed." },
-        STATUS_CODES.BAD_REQUEST
-      );
-      return;
-    }
-
-    const pdfBuffer = await generateNOCBuffer(loan);
-    res.header("Content-Type", "application/pdf");
-    res.attachment(`NOC_${loan.caseNo}.pdf`);
-    res.send(pdfBuffer);
-  } catch (error: any) {
-    console.error("NOC generation error:", error);
-    sendErrorResponse(res, error.message || "Internal Server Error", STATUS_CODES.INTERNAL_SERVER_ERROR);
-  }
-};
 
 export const editTransaction = async (req: Request, res: Response) => {
   try {

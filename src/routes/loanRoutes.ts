@@ -44,6 +44,5 @@ router.put("/transactions/:id", loanController.editTransaction);
 router.post("/loan/:caseNo/foreclose", loanController.foreclosureLoan);
 router.post("/loan/:caseNo/unforeclose", loanController.unforecloseLoan);
 router.post("/loans/foreclose-bulk", loanController.foreclosureLoansBulk);
-router.get("/loan/:caseNo/noc-download", loanController.downloadNOC);
 
 export default router;
