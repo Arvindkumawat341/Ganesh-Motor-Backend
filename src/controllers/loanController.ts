@@ -301,12 +301,22 @@ export const getForeclosedLoans = async (_req: Request, res: Response) => {
   }
 };
 
+export const getExpiredLoans = async (_req: Request, res: Response) => {
+  try {
+    const loans = await loanService.getExpiredLoans();
+    sendSuccessResponse(res, loans, "Expired loans fetched successfully");
+  } catch (error: any) {
+    console.error("Error fetching expired loans:", error);
+    sendErrorResponse(res, error, STATUS_CODES.INTERNAL_SERVER_ERROR);
+  }
+};
+
 export const getLedgerLoans = async (req: Request, res: Response) => {
   try {
     const { status, caseNo, name, prefix } = req.query;
 
     const loans = await loanService.getLedgerLoans({
-      status: status as "pending" | "paid" | "foreclosed" | undefined,
+      status: status as "pending" | "paid" | "foreclosed" | "expired" | undefined,
       caseNo: caseNo as string,
       name: name as string,
       prefix: prefix as string,
@@ -327,7 +337,7 @@ export const downloadLedgerCSV = async (
     const { status, caseNo, name, prefix } = req.query;
 
     const csvData = await loanService.generateLedgerCSV({
-      status: status as "pending" | "paid" | "foreclosed" | undefined,
+      status: status as "pending" | "paid" | "foreclosed" | "expired" | undefined,
       caseNo: caseNo as string,
       name: name as string,
       prefix: prefix as string,

@@ -147,18 +147,60 @@ export const getAllLoans = async (): Promise<ILoan[]> => {
     {
       $project: {
         caseNo: "$_id",
-        isFullyPaid: { $setEquals: ["$statuses", ["Paid"]] }
+        isFullyPaid: { $setEquals: ["$statuses", ["Paid"]] },
+        // No "Pending" rows left means the full tenure has already run its
+        // course — that's an overdue/expired case, not one still on track.
+        hasPending: { $in: ["Pending", "$statuses"] },
       }
     }
   ]);
   const pendingCaseNos = caseStatus
-    .filter(c => !c.isFullyPaid)
+    .filter(c => !c.isFullyPaid && c.hasPending)
     .map(c => c.caseNo);
   // A foreclosed case's schedule is never a pure {"Paid"} set (the closed-
   // out rows are "Foreclosed"), so it already lands here — filter it out,
   // it belongs in the dedicated Foreclosed tab instead.
   const loans = await Loan.find({ caseNo: { $in: pendingCaseNos } });
   return loans.filter((loan) => loan.status !== "foreclosed");
+};
+
+// A case whose tenure has fully run out (no "Pending" — i.e. future —
+// installments left) but still has unpaid "Due" ones: the borrower stopped
+// paying before finishing the loan instead of foreclosing it.
+export const getExpiredLoans = async (): Promise<any[]> => {
+  const caseStatus = await LoanSchedule.aggregate([
+    { $group: { _id: "$caseNo", statuses: { $addToSet: "$status" } } },
+    {
+      $project: {
+        caseNo: "$_id",
+        hasPending: { $in: ["Pending", "$statuses"] },
+        hasDue: { $in: ["Due", "$statuses"] },
+      },
+    },
+  ]);
+  const expiredCaseNos = caseStatus
+    .filter((c) => !c.hasPending && c.hasDue)
+    .map((c) => c.caseNo);
+  const loans = await Loan.find({ caseNo: { $in: expiredCaseNos } });
+  const eligible = loans.filter((loan) => loan.status !== "foreclosed");
+
+  // How many EMIs are sitting unpaid, and for how much — the whole point of
+  // this tab is spotting how overdue a case has gone.
+  const caseNos = eligible.map((l) => l.caseNo);
+  const dueStats = await LoanSchedule.aggregate([
+    { $match: { caseNo: { $in: caseNos }, status: "Due" } },
+    { $group: { _id: "$caseNo", dueCount: { $sum: 1 }, dueAmount: { $sum: "$emi" } } },
+  ]);
+  const statsMap = new Map(dueStats.map((s) => [s._id, s]));
+
+  return eligible.map((loan) => {
+    const stats = statsMap.get(loan.caseNo) || { dueCount: 0, dueAmount: 0 };
+    return {
+      ...loan.toObject(),
+      dueCount: stats.dueCount ?? 0,
+      dueAmount: stats.dueAmount ?? 0,
+    };
+  });
 };
 
 export const getPaidLoans = async (): Promise<ILoan[]> => {
@@ -217,7 +259,7 @@ export const filterLoans = async (filters: LoanFilter): Promise<ILoan[]> => {
 };
 
 interface LedgerFilter {
-  status?: "pending" | "paid" | "foreclosed";
+  status?: "pending" | "paid" | "foreclosed" | "expired";
   caseNo?: string;
   name?: string;
   prefix?: string;
@@ -226,14 +268,17 @@ interface LedgerFilter {
 export const getLedgerLoans = async (
   filters: LedgerFilter
 ): Promise<any[]> => {
-  // The Foreclosed tab lists every foreclosed case, not just ones sitting
-  // on a leftover ledger balance — foreclosure zeroes principalOutstands
-  // but doesn't touch ledgerBalance, so most foreclosed cases would be
-  // filtered out by the ledgerBalance>0 check below.
+  // The Foreclosed/Expired tabs list every matching case, not just ones
+  // sitting on a leftover ledger balance — neither status touches
+  // ledgerBalance, so most of them would be filtered out by the
+  // ledgerBalance>0 check below.
   const query: any =
-    filters.status === "foreclosed"
-      ? { status: "foreclosed" }
+    filters.status === "foreclosed" || filters.status === "expired"
+      ? {}
       : { ledgerBalance: { $gt: 0 } };
+  if (filters.status === "foreclosed") {
+    query.status = "foreclosed";
+  }
 
   if (filters.caseNo) {
     query.caseNo = { $regex: filters.caseNo, $options: "i" };
@@ -256,21 +301,41 @@ export const getLedgerLoans = async (
         $project: {
           caseNo: "$_id",
           isFullyPaid: { $setEquals: ["$statuses", ["Paid"]] },
+          hasPending: { $in: ["Pending", "$statuses"] },
         },
       },
     ]);
     const paidCaseNos = new Set(
       caseStatus.filter((c) => c.isFullyPaid).map((c) => c.caseNo)
     );
-    // Foreclosed cases have their own tab — never show them under Pending
-    // or Paid, regardless of how much of their schedule got marked "Paid"
-    // before the foreclosure happened.
+    const pendingCaseNos = new Set(
+      caseStatus.filter((c) => !c.isFullyPaid && c.hasPending).map((c) => c.caseNo)
+    );
+    // Foreclosed/expired cases have their own tabs — never show them under
+    // Pending or Paid.
     loans = loans.filter((loan) => {
       if (loan.status === "foreclosed") return false;
       return filters.status === "paid"
         ? paidCaseNos.has(loan.caseNo)
-        : !paidCaseNos.has(loan.caseNo);
+        : pendingCaseNos.has(loan.caseNo);
     });
+  } else if (filters.status === "expired") {
+    const caseStatus = await LoanSchedule.aggregate([
+      { $group: { _id: "$caseNo", statuses: { $addToSet: "$status" } } },
+      {
+        $project: {
+          caseNo: "$_id",
+          hasPending: { $in: ["Pending", "$statuses"] },
+          hasDue: { $in: ["Due", "$statuses"] },
+        },
+      },
+    ]);
+    const expiredCaseNos = new Set(
+      caseStatus.filter((c) => !c.hasPending && c.hasDue).map((c) => c.caseNo)
+    );
+    loans = loans.filter(
+      (loan) => loan.status !== "foreclosed" && expiredCaseNos.has(loan.caseNo)
+    );
   }
 
   // EMI amount + how much is currently Due, so the ledger view can show
