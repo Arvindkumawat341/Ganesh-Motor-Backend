@@ -449,7 +449,7 @@ export const uploadTransactions = async (req: Request, res: Response) => {
       );
     }
 
-    const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
+    const workbook = XLSX.read(req.file.buffer, { type: "buffer", cellDates: true });
     const sheetName = workbook.SheetNames[0];
     const data = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
 

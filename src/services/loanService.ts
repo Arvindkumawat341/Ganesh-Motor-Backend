@@ -590,6 +590,21 @@ const applyLedgerToSchedules = async (caseNo: string) => {
   await loan.save();
 };
 
+// getInstallmentsByCaseNo displays a NACH transaction's real payment date by
+// parsing Value_Date as "DD/MM/YYYY" text. Without cellDates on the XLSX
+// read, a date-formatted Excel cell comes through here as a raw serial
+// number (e.g. 46101) instead — save that as-is and every row silently
+// falls back to "today" on display. Normalize whatever Excel handed us
+// (Date object, or already-a-string) into that expected text format.
+const formatValueDate = (raw: unknown): string => {
+  if (raw instanceof Date && !isNaN(raw.getTime())) {
+    const day = String(raw.getDate()).padStart(2, "0");
+    const month = String(raw.getMonth() + 1).padStart(2, "0");
+    return `${day}/${month}/${raw.getFullYear()}`;
+  }
+  return String(raw ?? "");
+};
+
 export const processTransactionData = async (rows: any[]) => {
   const currentUploadDate = new Date();
 
@@ -602,7 +617,7 @@ export const processTransactionData = async (rows: any[]) => {
     const VocharId = uuidv4();
     const narration = `${reference}_${name}_${UMRN}`;
     const paymentMode = row["paymentMode"]?.toString().trim() || "NACH";
-    const valueDate = row["Value_Date"];
+    const valueDate = formatValueDate(row["Value_Date"]);
     const caseNo = reference;
 
     const transaction = {
