@@ -31,6 +31,11 @@ router.post(
 );
 router.get("/transactions", loanController.getUploadedTransactions);
 router.post("/update-ledger-balance", loanController.updateLedgerBalance);
+router.post("/transfer-ledger-balance", loanController.transferLedgerBalance);
+router.get("/case-remarks/:caseNo", loanController.getCaseRemarks);
+router.post("/case-remarks/:caseNo", loanController.addCaseRemark);
+router.delete("/case-remarks/:id", loanController.deleteCaseRemark);
+router.get("/case-activity/:caseNo", loanController.getCaseActivity);
 router.post(
   "/bulk-ledger-upload",
   upload.single("file"),

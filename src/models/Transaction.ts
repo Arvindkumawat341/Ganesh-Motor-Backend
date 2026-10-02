@@ -16,6 +16,9 @@ export interface ITransaction extends Document {
   otherCharges?: number;
   remarks?: string;
   date?: Date;
+  transferType?: "in" | "out";
+  linkedCaseNo?: string;
+  linkedTransactionId?: mongoose.Types.ObjectId;
 }
 
 const transactionSchema = new Schema<ITransaction>(
@@ -35,6 +38,9 @@ const transactionSchema = new Schema<ITransaction>(
     otherCharges: { type: Number, default: 0 },
     remarks: { type: String },
     date: { type: Date, default: Date.now },
+    transferType: { type: String, enum: ["in", "out"] },
+    linkedCaseNo: { type: String },
+    linkedTransactionId: { type: mongoose.Schema.Types.ObjectId, ref: "Transaction" },
   },
   { timestamps: true }
 );

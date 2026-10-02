@@ -10,6 +10,8 @@ import {
 } from "../helper";
 import XLSX from "xlsx";
 import Transaction from "../models/Transaction";
+import CaseRemark from "../models/CaseRemark";
+import CaseActivity from "../models/CaseActivity";
 import { Readable } from "stream";
 
 function bufferToStream(buffer: Buffer): Readable {
@@ -829,6 +831,104 @@ export const runCronJob = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error("Cron error:", error);
     sendErrorResponse(res, error.message || "Cron failed", STATUS_CODES.INTERNAL_SERVER_ERROR);
+  }
+};
+
+export const getCaseRemarks = async (req: Request, res: Response) => {
+  try {
+    const { caseNo } = req.params;
+    const remarks = await CaseRemark.find({ caseNo }).sort({ createdAt: -1 });
+    return sendSuccessResponse(res, remarks, "Case remarks fetched successfully");
+  } catch (error: any) {
+    console.error("Error fetching case remarks:", error);
+    return sendErrorResponse(res, error.message || "Internal Server Error", 500);
+  }
+};
+
+export const addCaseRemark = async (req: Request, res: Response) => {
+  try {
+    const { caseNo } = req.params;
+    const { text } = req.body;
+
+    if (!text || !text.trim()) {
+      return sendErrorResponse(res, { message: "Remark text is required." }, 400);
+    }
+
+    const loan = await Loan.findOne({ caseNo });
+    if (!loan) {
+      return sendErrorResponse(res, { message: `Case ${caseNo} not found.` }, 404);
+    }
+
+    const remark = await CaseRemark.create({ caseNo, text: text.trim() });
+    return sendSuccessResponse(res, remark, "Remark added successfully", STATUS_CODES.CREATED);
+  } catch (error: any) {
+    console.error("Error adding case remark:", error);
+    return sendErrorResponse(res, error.message || "Internal Server Error", 500);
+  }
+};
+
+export const deleteCaseRemark = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const remark = await CaseRemark.findByIdAndDelete(id);
+    if (!remark) {
+      return sendErrorResponse(res, { message: "Remark not found." }, 404);
+    }
+    return sendSuccessResponse(res, {}, "Remark deleted successfully");
+  } catch (error: any) {
+    console.error("Error deleting case remark:", error);
+    return sendErrorResponse(res, error.message || "Internal Server Error", 500);
+  }
+};
+
+export const getCaseActivity = async (req: Request, res: Response) => {
+  try {
+    const { caseNo } = req.params;
+    const activity = await CaseActivity.find({ caseNo }).sort({ createdAt: -1 });
+    return sendSuccessResponse(res, activity, "Case activity fetched successfully");
+  } catch (error: any) {
+    console.error("Error fetching case activity:", error);
+    return sendErrorResponse(res, error.message || "Internal Server Error", 500);
+  }
+};
+
+export const transferLedgerBalance = async (req: Request, res: Response) => {
+  try {
+    const { fromCaseNo, toCaseNo, amount, remarks, date } = req.body;
+
+    if (!fromCaseNo || !toCaseNo || typeof amount !== "number") {
+      return sendErrorResponse(
+        res,
+        { message: "fromCaseNo, toCaseNo, and amount are required." },
+        400
+      );
+    }
+
+    const result = await loanService.transferLedgerBalance(
+      fromCaseNo,
+      toCaseNo,
+      amount,
+      remarks,
+      date ? new Date(date) : undefined
+    );
+
+    if (!result.success) {
+      return sendErrorResponse(res, { message: result.message as string }, 400);
+    }
+
+    return sendSuccessResponse(
+      res,
+      { fromLedgerBalance: result.fromLedgerBalance, toLedgerBalance: result.toLedgerBalance },
+      "Ledger balance transferred successfully.",
+      200
+    );
+  } catch (error: any) {
+    console.error("Error transferring ledger balance:", error);
+    return sendErrorResponse(
+      res,
+      error.message || "Internal Server Error",
+      500
+    );
   }
 };
 

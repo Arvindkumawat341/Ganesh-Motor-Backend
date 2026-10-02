@@ -4,6 +4,19 @@ import { LoanSchedule } from "../models/LoanSchedule";
 import { Parser } from "json2csv";
 import { v4 as uuidv4 } from "uuid";
 import Transaction from "../models/Transaction";
+import CaseActivity from "../models/CaseActivity";
+
+// Records a human-readable entry in a case's activity timeline — the
+// "what changed and when" feed shown on the case detail page, distinct
+// from CaseRemark's free-text notes. Logging failures are swallowed so a
+// timeline write can never block the actual money/schedule mutation.
+const logCaseActivity = async (caseNo: string, type: string, message: string) => {
+  try {
+    await CaseActivity.create({ caseNo, type, message });
+  } catch (err) {
+    console.error("Failed to log case activity:", err);
+  }
+};
 
 export const createLoan = async (loanData: ILoan): Promise<ILoan> => {
   const existing = await Loan.findOne({ caseNo: loanData.caseNo });
@@ -31,6 +44,7 @@ export const createLoan = async (loanData: ILoan): Promise<ILoan> => {
   const scheduleIds = insertedSchedules.map((doc) => doc._id);
   savedLoan.loanScheduleIds = scheduleIds.map((id) => id.toString());
   await savedLoan.save();
+  await logCaseActivity(savedLoan.caseNo, "case_created", `Case created (loan amount ₹${loanData.loanAmount}, tenure ${loanData.tenure})`);
   return savedLoan;
 };
 
@@ -742,7 +756,92 @@ export const addAmountToLedger = async (
   await applyLedgerToSchedules(caseNo);
   const updatedLoan = await Loan.findOne({ caseNo });
 
+  await logCaseActivity(caseNo, "payment_added", `Payment of ₹${amount} added via ${paymentMode}${remarks ? ` — ${remarks}` : ""}`);
+
   return { success: true, ledgerBalance: updatedLoan?.ledgerBalance ?? loan.ledgerBalance };
+};
+
+// Moves surplus ledgerBalance from one case straight into another case's
+// ledger as a payment, instead of the money just sitting unused on a
+// completed case. Logged as two linked Transaction rows (one "out" on the
+// source, one "in" on the destination) so each case's own transaction
+// history shows exactly where the money went/came from, and editing or
+// deleting either row (see editTransaction/deleteTransaction) reverses both
+// sides together instead of leaving one case's ledger out of sync.
+export const transferLedgerBalance = async (
+  fromCaseNo: string,
+  toCaseNo: string,
+  amount: number,
+  remarks?: string,
+  date?: Date
+): Promise<{
+  success: boolean;
+  message?: string;
+  fromLedgerBalance?: number;
+  toLedgerBalance?: number;
+}> => {
+  if (fromCaseNo === toCaseNo) {
+    return { success: false, message: "Source and destination case cannot be the same." };
+  }
+  if (!amount || amount <= 0) {
+    return { success: false, message: "Amount must be greater than zero." };
+  }
+
+  const [fromLoan, toLoan] = await Promise.all([
+    Loan.findOne({ caseNo: fromCaseNo }),
+    Loan.findOne({ caseNo: toCaseNo }),
+  ]);
+  if (!fromLoan) return { success: false, message: `Case ${fromCaseNo} not found.` };
+  if (!toLoan) return { success: false, message: `Case ${toCaseNo} not found.` };
+  if ((fromLoan.ledgerBalance ?? 0) < amount) {
+    return { success: false, message: `Case ${fromCaseNo} has insufficient ledger balance to transfer.` };
+  }
+
+  fromLoan.ledgerBalance = (fromLoan.ledgerBalance ?? 0) - amount;
+  const outTxn = await Transaction.create({
+    caseNo: fromCaseNo,
+    amount: -amount,
+    paymentMode: "Transfer",
+    transferType: "out",
+    linkedCaseNo: toCaseNo,
+    remarks: remarks || `Transferred to ${toCaseNo}`,
+    ...(date && { date }),
+  });
+  fromLoan.transactions = fromLoan.transactions || [];
+  fromLoan.transactions.push(outTxn._id as mongoose.Types.ObjectId);
+  await fromLoan.save();
+
+  toLoan.ledgerBalance = (toLoan.ledgerBalance ?? 0) + amount;
+  const inTxn = await Transaction.create({
+    caseNo: toCaseNo,
+    amount,
+    paymentMode: "Transfer",
+    transferType: "in",
+    linkedCaseNo: fromCaseNo,
+    linkedTransactionId: outTxn._id as mongoose.Types.ObjectId,
+    remarks: remarks || `Received from ${fromCaseNo}`,
+    ...(date && { date }),
+  });
+  toLoan.transactions = toLoan.transactions || [];
+  toLoan.transactions.push(inTxn._id as mongoose.Types.ObjectId);
+  await toLoan.save();
+
+  outTxn.linkedTransactionId = inTxn._id as mongoose.Types.ObjectId;
+  await outTxn.save();
+
+  await applyLedgerToSchedules(toCaseNo);
+
+  const updatedFromLoan = await Loan.findOne({ caseNo: fromCaseNo });
+  const updatedToLoan = await Loan.findOne({ caseNo: toCaseNo });
+
+  await logCaseActivity(fromCaseNo, "ledger_transfer_out", `₹${amount} settled out to case ${toCaseNo}${remarks ? ` — ${remarks}` : ""}`);
+  await logCaseActivity(toCaseNo, "ledger_transfer_in", `₹${amount} settled in from case ${fromCaseNo}${remarks ? ` — ${remarks}` : ""}`);
+
+  return {
+    success: true,
+    fromLedgerBalance: updatedFromLoan?.ledgerBalance ?? fromLoan.ledgerBalance,
+    toLedgerBalance: updatedToLoan?.ledgerBalance ?? toLoan.ledgerBalance,
+  };
 };
 
 // Helper function to rollback EMIs for a loan by amount
@@ -812,6 +911,8 @@ export const deleteTransaction = async (transactionId: string): Promise<{ succes
     return { success: false, message: "Loan not found." };
   }
 
+  const deletedAmount = transaction.amount || 0;
+
   // Subtract amount from ledger
   loan.ledgerBalance = (loan.ledgerBalance || 0) - (transaction.amount || 0);
 
@@ -821,8 +922,42 @@ export const deleteTransaction = async (transactionId: string): Promise<{ succes
   // Rollback EMIs
   await rollbackEmis(loan, transaction.amount || 0);
 
+  // This transaction may be one half of an inter-case ledger transfer —
+  // reverse the linked case's loan too (same amount/sign logic, mirrored),
+  // so deleting either side gives the money back to wherever it came from
+  // instead of leaving the other case's ledger holding a now-orphaned entry.
+  let linkedCaseNoToResweep: string | undefined;
+  let linkedCaseNoLogged: string | undefined;
+  if (transaction.linkedTransactionId) {
+    const linkedTxn = await Transaction.findById(transaction.linkedTransactionId);
+    if (linkedTxn) {
+      const linkedLoan = await Loan.findOne({ caseNo: linkedTxn.caseNo });
+      if (linkedLoan) {
+        linkedLoan.ledgerBalance = (linkedLoan.ledgerBalance || 0) - (linkedTxn.amount || 0);
+        linkedLoan.transactions = linkedLoan.transactions?.filter(
+          (id) => !id.equals(linkedTxn._id as mongoose.Types.ObjectId)
+        ) || [];
+        await rollbackEmis(linkedLoan, linkedTxn.amount || 0);
+        linkedCaseNoToResweep = linkedLoan.caseNo;
+      }
+      linkedCaseNoLogged = linkedTxn.caseNo;
+      await Transaction.findByIdAndDelete(linkedTxn._id);
+    }
+  }
+
   // Delete transaction
   await Transaction.findByIdAndDelete(transactionId);
+
+  if (linkedCaseNoToResweep) {
+    await applyLedgerToSchedules(linkedCaseNoToResweep);
+  }
+
+  if (linkedCaseNoLogged) {
+    await logCaseActivity(transaction.caseNo as string, "transfer_deleted", `Ledger transfer with case ${linkedCaseNoLogged} deleted (₹${Math.abs(deletedAmount)} reversed)`);
+    await logCaseActivity(linkedCaseNoLogged, "transfer_deleted", `Ledger transfer with case ${transaction.caseNo} deleted (₹${Math.abs(deletedAmount)} reversed)`);
+  } else {
+    await logCaseActivity(transaction.caseNo as string, "transaction_deleted", `Transaction of ₹${deletedAmount} (${transaction.paymentMode}) deleted`);
+  }
 
   // Re-process remaining Due installments with current ledger balance
   const caseNo = transaction.caseNo;
@@ -910,6 +1045,8 @@ export const foreclosureLoan = async (
   loan.foreclosureCharges = charges;
   await loan.save();
 
+  await logCaseActivity(caseNo, "foreclosed", `Case foreclosed — payoff ₹${payoffAmount}${remarks ? ` — ${remarks}` : ""}`);
+
   return { success: true, payoffAmount, loan };
 };
 
@@ -955,6 +1092,9 @@ export const unforecloseLoan = async (
   }
 
   await loan.save();
+
+  await logCaseActivity(caseNo, "unforeclosed", "Foreclosure reversed — case active again");
+
   return { success: true, loan };
 };
 
@@ -990,6 +1130,28 @@ export const editTransaction = async (
     return { success: false, message: "Loan not found." };
   }
 
+  const oldAmount = transaction.amount || 0;
+  const isTransfer = !!transaction.linkedTransactionId;
+
+  // This transaction may be one half of an inter-case ledger transfer — the
+  // two legs must stay equal and opposite, so check the linked case can
+  // actually afford the new amount before anything is changed on either side.
+  let linkedTxn: any = null;
+  let linkedLoan: any = null;
+  if (transaction.linkedTransactionId && updates.amount !== undefined) {
+    linkedTxn = await Transaction.findById(transaction.linkedTransactionId);
+    if (linkedTxn) {
+      linkedLoan = await Loan.findOne({ caseNo: linkedTxn.caseNo });
+      if (linkedLoan) {
+        const linkedLedgerAfterRollback = (linkedLoan.ledgerBalance || 0) - (linkedTxn.amount || 0);
+        const newLinkedAmount = -updates.amount;
+        if (linkedLedgerAfterRollback + newLinkedAmount < 0) {
+          return { success: false, message: "Linked case does not have enough ledger balance for this amount." };
+        }
+      }
+    }
+  }
+
   // Full rollback of old transaction
   loan.ledgerBalance = (loan.ledgerBalance || 0) - (transaction.amount || 0);
   await rollbackEmis(loan, transaction.amount || 0);
@@ -1008,6 +1170,29 @@ export const editTransaction = async (
 
   // Run cron logic
   await applyCronForLoan(loan);
+
+  // Mirror the edited amount (opposite sign) onto the linked case so the
+  // transfer stays balanced — e.g. editing the "in" leg up by 500 pulls
+  // another 500 out of the "out" leg's case.
+  if (linkedTxn && linkedLoan) {
+    linkedLoan.ledgerBalance = (linkedLoan.ledgerBalance || 0) - (linkedTxn.amount || 0);
+    await rollbackEmis(linkedLoan, linkedTxn.amount || 0);
+
+    linkedTxn.amount = -(transaction.amount || 0);
+    await linkedTxn.save();
+
+    linkedLoan.ledgerBalance = (linkedLoan.ledgerBalance || 0) + (linkedTxn.amount || 0);
+    await linkedLoan.save();
+    await applyCronForLoan(linkedLoan);
+  }
+
+  if (isTransfer && linkedTxn) {
+    const newAmount = transaction.amount || 0;
+    await logCaseActivity(transaction.caseNo as string, "transfer_edited", `Ledger transfer with case ${linkedTxn.caseNo} changed: ₹${Math.abs(oldAmount)} → ₹${Math.abs(newAmount)}`);
+    await logCaseActivity(linkedTxn.caseNo as string, "transfer_edited", `Ledger transfer with case ${transaction.caseNo} changed: ₹${Math.abs(oldAmount)} → ₹${Math.abs(newAmount)}`);
+  } else {
+    await logCaseActivity(transaction.caseNo as string, "transaction_edited", `Transaction edited: ₹${oldAmount} → ₹${transaction.amount}`);
+  }
 
   return { success: true, ledgerBalance: loan.ledgerBalance };
 };
